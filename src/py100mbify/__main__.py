@@ -137,7 +137,7 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         cmd.extend([
             '-pass', '2',
             '-passlogfile', pass_log_file,
-            '-quality', 'good',
+            '-quality', 'best',
             '-threads', '4', # Use a fixed number of threads for consistent performance
             output_file
         ])
@@ -159,15 +159,37 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     seconds = int(duration_seconds % 60)
     print(f"\n--- FFmpeg Pass {pass_number} completed in {minutes}m {seconds}s ---")
 
+def calculate_bitrates(size, effective_duration_seconds, audio_bitrate, is_audio_enabled):
+    """
+    Calculates the target total and video bitrates based on target size and duration.
+    Returns a tuple (target_total_bitrate_kbps, target_video_bitrate_kbps).
+    """
+    target_size_bits = size * 8 * 1024 * 1024  # MiB to bits
+
+    if effective_duration_seconds == 0:
+        raise ScriptError("Error: Video has a duration of zero. Cannot proceed.")
+
+    # Calculate total bitrate with 5% overhead buffer
+    target_total_bitrate_kbps = (target_size_bits / effective_duration_seconds) * 0.95 / 1000
+
+    # Calculate target video bitrate
+    audio_bitrate_to_subtract_kbps = audio_bitrate if is_audio_enabled else 0
+    target_video_bitrate_kbps = target_total_bitrate_kbps - audio_bitrate_to_subtract_kbps
+
+    # Ensure video bitrate is not too low
+    if target_video_bitrate_kbps <= MIN_VIDEO_BITRATE_KBPS:
+        target_video_bitrate_kbps = MIN_VIDEO_BITRATE_KBPS
+
+    return target_total_bitrate_kbps, target_video_bitrate_kbps
+
+
 def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
                     audio_bitrate=DEFAULT_AUDIO_BITRATE_KBPS, mute=False, speed=1.0,
                     start=None, end=None, fps=None, scale=None, cpu_priority=None,
                     prepend_filters=None, append_filters=None):
     """
     Compresses a video file to a target size using FFmpeg.
-
-    This function contains the core logic for the conversion process and is
-    designed to be used as an API, independent of the command-line interface.
+    This function contains the core logic for the conversion process.
     """
     try:
         # Check for required commands before doing anything else
@@ -193,23 +215,14 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
 
         # Apply speed to duration
         effective_duration_seconds = duration_seconds / speed
-
-        target_size_bits = size * 8 * 1024 * 1024 # MiB to bits
         is_audio_enabled = not mute and audio_streams
 
-        if effective_duration_seconds == 0:
-            raise ScriptError("Error: Video has a duration of zero. Cannot proceed.")
-
-        # Calculate total bitrate with 5% overhead buffer
-        target_total_bitrate_kbps = (target_size_bits / effective_duration_seconds) * 0.95 / 1000
-
-        # Calculate target video bitrate
-        audio_bitrate_to_subtract_kbps = audio_bitrate if is_audio_enabled else 0
-        target_video_bitrate_kbps = target_total_bitrate_kbps - audio_bitrate_to_subtract_kbps
-
-        # Ensure video bitrate is not too low
-        if target_video_bitrate_kbps <= MIN_VIDEO_BITRATE_KBPS:
-            target_video_bitrate_kbps = MIN_VIDEO_BITRATE_KBPS
+        target_total_bitrate_kbps, target_video_bitrate_kbps = calculate_bitrates(
+            size,
+            effective_duration_seconds,
+            audio_bitrate,
+            is_audio_enabled
+        )
 
         # Define pass log file based on output filename
         pass_log_file = os.path.splitext(os.path.basename(output_file))[0] + "_passlog"
