@@ -111,8 +111,9 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, duration, args, pass_l
     # Set up video filters in an array, ordered by type
     video_filters = []
 
-    if args.video_filters_prepend:
-        video_filters.append(f'{video_filters_prepend}')
+    # Prepend filters from the command-line argument
+    if args.prepend_filters:
+        video_filters.append(args.prepend_filters)
 
     # 1. Selection Filters
     if args.speed != 1.0:
@@ -124,8 +125,9 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, duration, args, pass_l
     if args.fps:
         video_filters.append(f'fps={args.fps}')
 
-    if args.video_filters_append:
-        video_filters.append(f'{video_filters_append}')
+    # Append filters from the command-line argument
+    if args.append_filters:
+        video_filters.append(args.append_filters)
 
     # Add video filters to the command if any are present
     if video_filters:
@@ -228,6 +230,9 @@ def main():
     parser.add_argument('--mute', action='store_true', help='Mute the audio in the output video.')
     parser.add_argument('--scale', type=int, help="The target size for the video's smallest dimension (e.g., '720' for 720p equivalent).")
     parser.add_argument('--cpu-priority', choices=['high', 'low'], help='Set the CPU priority for the FFmpeg process. (e.g., "high" or "low")')
+    parser.add_argument('--prepend-filters', help='A comma-separated string of FFmpeg video filters to apply before standard filters.')
+    parser.add_argument('--append-filters', help='A comma-separated string of FFmpeg video filters to apply after standard filters.')
+
 
     args = parser.parse_args()
 
@@ -285,8 +290,6 @@ def main():
         print(f"Input File: {args.input_file}")
         print(f"Output File: {args.output_file}")
         print(f"Target Size: {args.size} MiB")
-        if args.cpu_priority:
-            print(f"CPU Priority: {args.cpu_priority}")
         print("--- Video Information ---")
         print(f"Original Resolution: {video_width}x{video_height}")
         print(f"Original FPS: {video_fps:.2f}")
@@ -314,6 +317,13 @@ def main():
             print("Audio will be muted.")
         else:
             print(f"Audio Bitrate: {args.audio_bitrate} kbps")
+        print("--- Additional Information ---")
+        if args.cpu_priority:
+            print(f"CPU Priority: {args.cpu_priority}")
+        if args.prepend_filters:
+            print(f"Prepending filters: {args.prepend_filters}")
+        if args.append_filters:
+            print(f"Appending filters: {args.append_filters}")
 
         print("--------------------------------------")
 
