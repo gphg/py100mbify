@@ -83,6 +83,19 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, duration, args, pass_l
         '-hide_banner', '-v', 'warning',
     ]
 
+    # Set CPU priority if specified
+    creation_flags = 0
+    if args.cpu_priority == 'low':
+        if sys.platform == 'win32':
+            creation_flags = subprocess.CREATE_NO_WINDOW | subprocess.IDLE_PRIORITY_CLASS
+        else:
+            ffmpeg_cmd = ['nice', '-n', '19'] + ffmpeg_cmd
+    elif args.cpu_priority == 'high':
+        if sys.platform == 'win32':
+            creation_flags = subprocess.CREATE_NO_WINDOW | subprocess.HIGH_PRIORITY_CLASS
+        else:
+            ffmpeg_cmd = ['nice', '-n', '-20'] + ffmpeg_cmd
+
     # Time trimming arguments
     if args.start:
         ffmpeg_cmd.extend(['-ss', str(args.start)])
@@ -168,7 +181,8 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, duration, args, pass_l
             ffmpeg_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
+            text=True,
+            creationflags=creation_flags
         )
         
         stdout_output, stderr_output = process.communicate()
@@ -205,6 +219,7 @@ def main():
                         help='Speed multiplier for the video. (e.g., 2.0 for 2x speed).')
     parser.add_argument('--mute', action='store_true', help='Mute the audio in the output video.')
     parser.add_argument('--scale', type=int, help="The target size for the video's smallest dimension (e.g., '720' for 720p equivalent).")
+    parser.add_argument('--cpu-priority', choices=['high', 'low'], help='Set the CPU priority for the FFmpeg process. (e.g., "high" or "low")')
 
     args = parser.parse_args()
 
@@ -283,6 +298,10 @@ def main():
             print("Audio will be muted.")
         else:
             print(f"Audio Bitrate: {args.audio_bitrate} kbps")
+        
+        if args.cpu_priority:
+            print(f"CPU Priority: {args.cpu_priority}")
+            
         print("--------------------------------------")
         
         # Run FFmpeg pass 1
