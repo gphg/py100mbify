@@ -1,0 +1,10 @@
+*.log
+
+*.m4v
+*.mp4
+*.mov
+*.webm
+*.opus
+
+# OG
+*100mbify.sh
