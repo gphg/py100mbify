@@ -78,13 +78,6 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         '-y'
     ]
 
-    # CPU priority flags
-    if cpu_priority == 'low' and os.name == 'posix':
-        cmd.insert(0, 'nice')
-    elif cpu_priority == 'low' and os.name == 'nt':
-        # On Windows, we'll try to set the priority after the process starts
-        pass
-
     # Input file and trim
     if start:
         cmd.extend(['-ss', start])
@@ -143,15 +136,46 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         ])
 
     try:
-        if pass_number == 1:
-            print("Running FFmpeg pass 1... This may take a moment.")
-            subprocess.run(cmd, check=True)
-        elif pass_number == 2:
-            print("Running FFmpeg pass 2...")
-            subprocess.run(cmd, check=True)
+        # Handle CPU priority and run the process
+        process = None
+        if cpu_priority == 'low' and os.name == 'posix':
+            # Use 'nice' on Unix-like systems
+            cmd.insert(0, 'nice')
+            print("Running FFmpeg with low CPU priority...")
+            process = subprocess.Popen(cmd)
+        elif cpu_priority == 'low' and os.name == 'nt':
+            # Use 'wmic' to set priority on Windows
+            print("Running FFmpeg with low CPU priority...")
+            # We start the process and then use wmic to set the priority
+            process = subprocess.Popen(cmd)
+            # Use a short sleep to ensure the process has started
+            time.sleep(0.5)
+            wmic_cmd = [
+                'wmic', 'process', 'where', f'processid={process.pid}', 'call', 'setpriority', '256'
+            ]
+            try:
+                subprocess.run(wmic_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except subprocess.CalledProcessError:
+                print("Warning: Could not set process priority using 'wmic'. Make sure it's in your PATH.")
+        else: # High or no priority
+            if cpu_priority == 'high':
+                print("Running FFmpeg with high CPU priority...")
+            if pass_number == 1:
+                print("Running FFmpeg pass 1... This may take a moment.")
+            else:
+                print("Running FFmpeg pass 2...")
+            process = subprocess.Popen(cmd)
+
+        # Wait for the process to finish
+        if process:
+            process.wait()
+            if process.returncode != 0:
+                 raise ScriptError(f"Error during FFmpeg pass {pass_number}: FFmpeg pass {pass_number} failed. Check the output for details.")
 
     except subprocess.CalledProcessError as e:
         raise ScriptError(f"Error during FFmpeg pass {pass_number}: FFmpeg pass {pass_number} failed. Check the output for details.")
+    except Exception as e:
+        raise ScriptError(f"An unexpected error occurred during FFmpeg pass {pass_number}: {e}")
 
     pass_end_time = time.time()
     duration_seconds = pass_end_time - pass_start_time
