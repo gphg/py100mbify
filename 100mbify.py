@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+
 import argparse
 import subprocess
 import os
@@ -12,6 +13,7 @@ import time
 REQUIRED_COMMANDS = ['ffprobe', 'ffmpeg']
 DEFAULT_TARGET_SIZE_MIB = 100  # Default target output size in MiB
 DEFAULT_AUDIO_BITRATE_KBPS = 96 # Default audio bitrate in kbps
+MIN_VIDEO_BITRATE_KBPS = 50
 
 class ScriptError(Exception):
     """Custom exception for script errors."""
@@ -39,10 +41,10 @@ def get_video_info(input_file):
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         probe_output = json.loads(result.stdout)
-        
+
         # Get duration from format section
         duration_seconds = float(probe_output['format']['duration'])
-        
+
         # Get video stream info
         video_stream = next((s for s in probe_output['streams'] if s['codec_type'] == 'video'), None)
         if not video_stream:
@@ -76,7 +78,7 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, duration, args, pass_l
     Includes simple progress monitoring.
     """
     print(f"\n--- Starting FFmpeg Pass {pass_number} ---")
-    
+
     # Base command
     ffmpeg_cmd = [
         'ffmpeg',
@@ -105,24 +107,30 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, duration, args, pass_l
     ffmpeg_cmd.extend([
         '-i', input_file
     ])
-    
+
     # Set up video filters in an array, ordered by type
     video_filters = []
-    
+
+    if args.video_filters_prepend:
+        video_filters.append(f'{video_filters_prepend}')
+
     # 1. Selection Filters
     if args.speed != 1.0:
         video_filters.append(f'setpts={1.0 / args.speed}*PTS')
-        
+
     # 2. Conversion Filters
     if args.scale:
         video_filters.append(f"scale='if(gt(iw,ih),-2,{args.scale})':'if(gt(iw,ih),{args.scale},-2)'")
     if args.fps:
         video_filters.append(f'fps={args.fps}')
-        
+
+    if args.video_filters_append:
+        video_filters.append(f'{video_filters_append}')
+
     # Add video filters to the command if any are present
     if video_filters:
         ffmpeg_cmd.extend(['-vf', ','.join(video_filters)])
-        
+
     # Bitrate and codec arguments
     ffmpeg_cmd.extend([
         '-c:v', 'libvpx-vp9',
@@ -132,7 +140,7 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, duration, args, pass_l
         '-pass', str(pass_number),
         '-passlogfile', pass_log_file,
     ])
-    
+
     # Audio arguments for pass 2
     if pass_number == 2:
         if args.mute:
@@ -159,12 +167,12 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, duration, args, pass_l
                 else:
                     atempo_filter = f'atempo={args.speed}'
                 ffmpeg_cmd.extend(['-af', atempo_filter])
-            
+
             ffmpeg_cmd.extend([
                 '-c:a', 'libopus',
                 '-b:a', f'{args.audio_bitrate}k'
             ])
-            
+
     # Overwrite output
     ffmpeg_cmd.append('-y')
 
@@ -184,15 +192,15 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, duration, args, pass_l
             text=True,
             creationflags=creation_flags
         )
-        
+
         stdout_output, stderr_output = process.communicate()
         end_time = time.time()
         duration_seconds = end_time - start_time
-        
+
         if process.returncode != 0:
             print(stderr_output)
             raise ScriptError(f"Error: FFmpeg pass {pass_number} failed. Check the output for details.")
-            
+
         print(f"\n--- FFmpeg Pass {pass_number} completed in {duration_seconds:.2f} seconds ---")
 
     except FileNotFoundError:
@@ -240,28 +248,33 @@ def main():
         print(f"Error: Output file path '{args.output_file}' is the same as the input file. Aborting to prevent overwrite.", file=sys.stderr)
         sys.exit(1)
 
-    # Convert MiB to bits
-    target_size_bits = args.size * 1024 * 1024 * 8
-    
+    # Convert MiB to kilobits, and then add a buffer for container overhead
+    target_size_kbits = args.size * 1024 * 8
+
     try:
         # Get video duration from ffprobe
         print(f"Probing '{args.input_file}' for duration...")
         duration_seconds, audio_streams, video_width, video_height, video_fps = get_video_info(args.input_file)
-        
+
         if duration_seconds <= 0:
             raise ScriptError("Error: Video has a duration of zero. Cannot proceed.")
-            
-        # Calculate target bitrates
+
+        # --- NEW BITRATE CALCULATION ---
+        # Calculate total target bitrate, with a small buffer for overhead (95%)
+        target_total_bitrate_kbps = (target_size_kbits / duration_seconds) * 0.95
+
+        # Determine if audio is enabled
         is_audio_enabled = not args.mute and bool(audio_streams)
-        
-        if not is_audio_enabled:
-            total_bitrate = target_size_bits / duration_seconds
-            args.target_video_bitrate_kbps = total_bitrate / 1000
-        else:
-            audio_bitrate_bits_per_sec = args.audio_bitrate * 1000
-            video_bitrate_bits_per_sec = (target_size_bits - (audio_bitrate_bits_per_sec * duration_seconds)) / duration_seconds
-            args.target_video_bitrate_kbps = video_bitrate_bits_per_sec / 1000
-            
+        audio_bitrate_to_subtract = args.audio_bitrate if is_audio_enabled else 0
+
+        # Calculate target video bitrate
+        args.target_video_bitrate_kbps = target_total_bitrate_kbps - audio_bitrate_to_subtract
+
+        # Ensure video bitrate is not negative or too low
+        if args.target_video_bitrate_kbps < MIN_VIDEO_BITRATE_KBPS:
+            print(f"Warning: Calculated video bitrate ({args.target_video_bitrate_kbps:.2f} kbps) is very low. Setting minimum to {MIN_VIDEO_BITRATE_KBPS} kbps.", file=sys.stderr)
+            args.target_video_bitrate_kbps = MIN_VIDEO_BITRATE_KBPS
+
         # Define pass log file based on output filename to prevent conflicts
         base_name = os.path.splitext(os.path.basename(args.output_file))[0]
         pass_log_file = f"{base_name}_passlog"
@@ -272,6 +285,8 @@ def main():
         print(f"Input File: {args.input_file}")
         print(f"Output File: {args.output_file}")
         print(f"Target Size: {args.size} MiB")
+        if args.cpu_priority:
+            print(f"CPU Priority: {args.cpu_priority}")
         print("--- Video Information ---")
         print(f"Original Resolution: {video_width}x{video_height}")
         print(f"Original FPS: {video_fps:.2f}")
@@ -280,7 +295,8 @@ def main():
             print(f"Target FPS: {args.fps}")
         if args.scale:
             print(f"Target Scale (smallest dimension): {args.scale}px")
-        print(f"Calculated target video bitrate: {args.target_video_bitrate_kbps:.2f} kbps")
+        print(f"Calculated total target bitrate: {target_total_bitrate_kbps:.2f} kbps")
+        print(f"Calculated video bitrate: {args.target_video_bitrate_kbps:.2f} kbps")
         speed_text = "normal"
         if args.speed > 1.0:
             speed_text = "faster"
@@ -298,18 +314,15 @@ def main():
             print("Audio will be muted.")
         else:
             print(f"Audio Bitrate: {args.audio_bitrate} kbps")
-        
-        if args.cpu_priority:
-            print(f"CPU Priority: {args.cpu_priority}")
-            
+
         print("--------------------------------------")
-        
+
         # Run FFmpeg pass 1
         run_ffmpeg_pass(1, args.input_file, os.devnull, duration_seconds, args, pass_log_file)
-        
+
         # Run FFmpeg pass 2
         run_ffmpeg_pass(2, args.input_file, args.output_file, duration_seconds, args, pass_log_file)
-        
+
         # Get final output file size
         final_size_bytes = os.path.getsize(args.output_file)
         final_size_mib = final_size_bytes / (1024 * 1024)
@@ -318,7 +331,7 @@ def main():
         os.remove(f'{pass_log_file}-0.log')
         if os.path.exists(f'{pass_log_file}-0.log.temp'):
             os.remove(f'{pass_log_file}-0.log.temp')
-            
+
         # Add a print statement for the total time taken
         script_end_time = time.time()
         total_time = script_end_time - script_start_time
@@ -327,7 +340,7 @@ def main():
         print(f"\nCompression completed successfully!")
         print(f"Final Output Size: {final_size_mib:.2f} MiB")
         print(f"Total time taken: {total_time:.2f} seconds.")
-        
+
     except ScriptError as e:
         print(e, file=sys.stderr)
         sys.exit(1)
