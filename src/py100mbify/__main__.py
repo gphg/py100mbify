@@ -15,6 +15,10 @@ DEFAULT_TARGET_SIZE_MIB = 100  # Default target output size in MiB
 DEFAULT_AUDIO_BITRATE_KBPS = 96 # Default audio bitrate in kbps
 MIN_VIDEO_BITRATE_KBPS = 50
 
+# Default values for configurable FFmpeg options
+DEFAULT_THREADS = 4
+DEFAULT_QUALITY = 'best'
+
 class ScriptError(Exception):
     """Custom exception for script errors."""
     pass
@@ -66,7 +70,8 @@ def get_video_info(input_file):
 
 def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_seconds,
                     target_video_bitrate_kbps, audio_bitrate, mute, speed, start, end,
-                    fps, scale, cpu_priority, prepend_filters, append_filters, pass_log_file):
+                    fps, scale, cpu_priority, prepend_filters, append_filters, pass_log_file,
+                    threads, quality):
     """Run a single FFmpeg encoding pass."""
     pass_start_time = time.time()
     print(f"\n--- Starting FFmpeg Pass {pass_number} ---")
@@ -130,8 +135,8 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         cmd.extend([
             '-pass', '2',
             '-passlogfile', pass_log_file,
-            '-quality', 'best',
-            '-threads', '4', # Use a fixed number of threads for consistent performance
+            '-quality', quality,
+            '-threads', str(threads),
             output_file
         ])
 
@@ -247,6 +252,10 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
         if abs_input == abs_output:
             raise ScriptError("Error: Input and output file paths are identical. This would overwrite the input file.")
 
+        # Read configurable FFmpeg options from environment variables with fallbacks
+        threads = int(os.environ.get('PY100MBIFY_THREADS', DEFAULT_THREADS))
+        quality = os.environ.get('PY100MBIFY_QUALITY', DEFAULT_QUALITY)
+
         # --- Video Info and Bitrate Calculation ---
         duration_seconds, audio_streams, video_width, video_height, video_fps = get_video_info(input_file)
 
@@ -280,6 +289,8 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
             print(f"Target Scale (smallest dimension): {scale}px")
         print(f"Calculated total target bitrate: {target_total_bitrate_kbps:.2f} kbps")
         print(f"Calculated video bitrate: {target_video_bitrate_kbps:.2f} kbps")
+        print(f"FFmpeg Threads: {threads}")
+        print(f"FFmpeg Quality: {quality}")
         speed_text = "normal"
         if speed > 1.0:
             speed_text = "faster"
@@ -310,12 +321,12 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
         # Run FFmpeg pass 1
         run_ffmpeg_pass(1, input_file, os.devnull, effective_duration_seconds, target_video_bitrate_kbps,
                         audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
-                        prepend_filters, append_filters, pass_log_file)
+                        prepend_filters, append_filters, pass_log_file, threads, quality)
 
         # Run FFmpeg pass 2
         run_ffmpeg_pass(2, input_file, output_file, effective_duration_seconds, target_video_bitrate_kbps,
                         audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
-                        prepend_filters, append_filters, pass_log_file)
+                        prepend_filters, append_filters, pass_log_file, threads, quality)
 
         # Get final output file size
         final_size_bytes = os.path.getsize(output_file)
