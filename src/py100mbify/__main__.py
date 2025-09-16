@@ -135,9 +135,9 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
             output_file
         ])
 
+    process = None
     try:
         # Handle CPU priority and run the process
-        process = None
         if cpu_priority == 'low' and os.name == 'posix':
             # Use 'nice' on Unix-like systems
             cmd.insert(0, 'nice')
@@ -172,9 +172,22 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
             if process.returncode != 0:
                  raise ScriptError(f"Error during FFmpeg pass {pass_number}: FFmpeg pass {pass_number} failed. Check the output for details.")
 
-    except subprocess.CalledProcessError as e:
-        raise ScriptError(f"Error during FFmpeg pass {pass_number}: FFmpeg pass {pass_number} failed. Check the output for details.")
+    except KeyboardInterrupt:
+        print("\nInterrupt received. Terminating FFmpeg process...")
+        if process and process.poll() is None:
+            process.terminate()
+            # Wait for a brief moment for it to terminate
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # If it's still alive, force kill
+                print("FFmpeg did not terminate. Forcing kill...")
+                process.kill()
+        sys.exit(1) # Exit the script
     except Exception as e:
+        # Other potential errors
+        if process and process.poll() is None:
+            process.kill() # Ensure process is killed on other errors
         raise ScriptError(f"An unexpected error occurred during FFmpeg pass {pass_number}: {e}")
 
     pass_end_time = time.time()
