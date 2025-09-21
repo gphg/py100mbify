@@ -72,7 +72,7 @@ def get_video_info(input_file):
 def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_seconds,
                     target_video_bitrate_kbps, audio_bitrate, mute, speed, start, end,
                     fps, scale, cpu_priority, prepend_filters, append_filters, pass_log_file,
-                    threads, quality, rotate):
+                    threads, quality, rotate, keep_metadata):
     """Run a single FFmpeg encoding pass."""
     pass_start_time = time.time()
     print(f"\n--- Starting FFmpeg Pass {pass_number} ---")
@@ -137,6 +137,8 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
             os.devnull
         ])
     elif pass_number == 2:
+        if keep_metadata:
+            cmd.extend(['-map_metadata', '0'])
         cmd.extend([
             '-pass', '2',
             '-passlogfile', pass_log_file,
@@ -233,7 +235,7 @@ def calculate_bitrates(size, effective_duration_seconds, audio_bitrate, is_audio
 def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
                     audio_bitrate=DEFAULT_AUDIO_BITRATE_KBPS, mute=False, speed=1.0,
                     start=None, end=None, fps=None, scale=None, cpu_priority=None,
-                    prepend_filters=None, append_filters=None, rotate=None):
+                    prepend_filters=None, append_filters=None, rotate=None, keep_metadata=False):
     """
     Compresses a video file to a target size using FFmpeg.
     This function contains the core logic for the conversion process.
@@ -322,18 +324,20 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
             print(f"Prepending filters: {prepend_filters}")
         if append_filters:
             print(f"Appending filters: {append_filters}")
+        if keep_metadata:
+            print("Keeping original metadata.")
 
         print("--------------------------------------")
 
         # Run FFmpeg pass 1
         run_ffmpeg_pass(1, input_file, os.devnull, effective_duration_seconds, target_video_bitrate_kbps,
                         audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
-                        prepend_filters, append_filters, pass_log_file, threads, quality, rotate)
+                        prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata)
 
         # Run FFmpeg pass 2
         run_ffmpeg_pass(2, input_file, output_file, effective_duration_seconds, target_video_bitrate_kbps,
                         audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
-                        prepend_filters, append_filters, pass_log_file, threads, quality, rotate)
+                        prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata)
 
         # Get final output file size
         final_size_bytes = os.path.getsize(output_file)
@@ -382,6 +386,8 @@ def main():
                         help='(Optional) The target size for the video\'s smallest dimension (e.g., 720 for 720p equivalent). The other dimension will be calculated to maintain aspect ratio.')
     parser.add_argument('--rotate', type=float,
                         help='(Optional) Rotate the video by the specified number of degrees. Positive values rotate clockwise, negative values rotate counter-clockwise (to the left).')
+    parser.add_argument('--keep-metadata', action='store_true',
+                        help='(Optional) Keep all original metadata from the input file.')
     parser.add_argument('--cpu-priority', choices=['low', 'high'],
                         help='(Optional) Set FFmpeg process CPU priority to low or high.')
     parser.add_argument('--prepend-filters', help='(Optional) FFmpeg filters to apply before standard filters.')
