@@ -7,6 +7,7 @@ import sys
 import shutil
 import json
 import time
+import math
 from datetime import datetime, timedelta
 
 # --- Script Configuration ---
@@ -71,7 +72,7 @@ def get_video_info(input_file):
 def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_seconds,
                     target_video_bitrate_kbps, audio_bitrate, mute, speed, start, end,
                     fps, scale, cpu_priority, prepend_filters, append_filters, pass_log_file,
-                    threads, quality):
+                    threads, quality, rotate):
     """Run a single FFmpeg encoding pass."""
     pass_start_time = time.time()
     print(f"\n--- Starting FFmpeg Pass {pass_number} ---")
@@ -99,6 +100,10 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         video_filters.append(prepend_filters)
 
     # Core filters
+    if rotate is not None:
+        # The rotate filter uses radians, so we convert the input degrees
+        rotation_radians = math.radians(rotate)
+        video_filters.append(f'rotate={rotation_radians}')
     if speed != 1.0:
         video_filters.append(f'setpts={1/speed}*PTS')
     if scale:
@@ -228,7 +233,7 @@ def calculate_bitrates(size, effective_duration_seconds, audio_bitrate, is_audio
 def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
                     audio_bitrate=DEFAULT_AUDIO_BITRATE_KBPS, mute=False, speed=1.0,
                     start=None, end=None, fps=None, scale=None, cpu_priority=None,
-                    prepend_filters=None, append_filters=None):
+                    prepend_filters=None, append_filters=None, rotate=None):
     """
     Compresses a video file to a target size using FFmpeg.
     This function contains the core logic for the conversion process.
@@ -283,6 +288,8 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
         print(f"Original Resolution: {video_width}x{video_height}")
         print(f"Original FPS: {video_fps:.2f}")
         print(f"Video Duration: {duration_seconds:.2f} seconds")
+        if rotate is not None:
+            print(f"Rotation: {rotate} degrees")
         if fps:
             print(f"Target FPS: {fps}")
         if scale:
@@ -321,12 +328,12 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
         # Run FFmpeg pass 1
         run_ffmpeg_pass(1, input_file, os.devnull, effective_duration_seconds, target_video_bitrate_kbps,
                         audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
-                        prepend_filters, append_filters, pass_log_file, threads, quality)
+                        prepend_filters, append_filters, pass_log_file, threads, quality, rotate)
 
         # Run FFmpeg pass 2
         run_ffmpeg_pass(2, input_file, output_file, effective_duration_seconds, target_video_bitrate_kbps,
                         audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
-                        prepend_filters, append_filters, pass_log_file, threads, quality)
+                        prepend_filters, append_filters, pass_log_file, threads, quality, rotate)
 
         # Get final output file size
         final_size_bytes = os.path.getsize(output_file)
@@ -373,6 +380,8 @@ def main():
     parser.add_argument('--fps', type=int, help='(Optional) Set a target frame rate (e.g., 30).')
     parser.add_argument('--scale', type=int,
                         help='(Optional) The target size for the video\'s smallest dimension (e.g., 720 for 720p equivalent). The other dimension will be calculated to maintain aspect ratio.')
+    parser.add_argument('--rotate', type=float,
+                        help='(Optional) Rotate the video by the specified number of degrees. Positive values rotate clockwise, negative values rotate counter-clockwise (to the left).')
     parser.add_argument('--cpu-priority', choices=['low', 'high'],
                         help='(Optional) Set FFmpeg process CPU priority to low or high.')
     parser.add_argument('--prepend-filters', help='(Optional) FFmpeg filters to apply before standard filters.')
