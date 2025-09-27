@@ -30,6 +30,27 @@ def check_required_commands(commands):
         if not shutil.which(cmd):
             raise ScriptError(f"Error: Required command '{cmd}' not found. Please install it.")
 
+def get_time_in_seconds(time_str):
+    """Converts HH:MM:SS.mmm string or a numeric string to total seconds."""
+    if not time_str:
+        return 0.0
+    try:
+        # Check if it's a numeric string (seconds)
+        return float(time_str)
+    except ValueError:
+        # Assume it's an FFmpeg timecode string (HH:MM:SS.mmm)
+        parts = time_str.split(':')
+        if len(parts) == 3:
+            h, m, s = parts
+            return float(h) * 3600 + float(m) * 60 + float(s)
+        elif len(parts) == 2:
+            m, s = parts
+            return float(m) * 60 + float(s)
+        else:
+            # Fallback to float conversion if parsing failed
+            # This is primarily for safety, FFmpeg parsing should catch timecodes
+            return 0.0
+
 def get_video_info(input_file):
     """
     Use ffprobe to get the video's duration, resolution, FPS, and audio stream information.
@@ -53,13 +74,15 @@ def get_video_info(input_file):
         # Get video stream info
         video_stream = next((s for s in probe_output['streams'] if s['codec_type'] == 'video'), None)
         if not video_stream:
-            raise ScriptError("Error: No video stream found in the input file.")
-
-        video_width = video_stream['width']
-        video_height = video_stream['height']
-        fps_string = video_stream.get('r_frame_rate', '0/1')
-        num, den = map(int, fps_string.split('/'))
-        video_fps = float(num) / float(den) if den != 0 else 0
+            video_width = 0
+            video_height = 0
+            video_fps = 0.0
+        else:
+            video_width = video_stream['width']
+            video_height = video_stream['height']
+            fps_string = video_stream.get('r_frame_rate', '0/1')
+            num, den = map(int, fps_string.split('/'))
+            video_fps = float(num) / float(den) if den != 0 else 0
 
         # Get audio streams
         audio_streams = [s for s in probe_output['streams'] if s['codec_type'] == 'audio']
@@ -73,7 +96,10 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
                     target_video_bitrate_kbps, audio_bitrate, mute, speed, start, end,
                     fps, scale, cpu_priority, prepend_filters, append_filters, pass_log_file,
                     threads, quality, rotate, keep_metadata):
-    """Run a single FFmpeg encoding pass."""
+    """
+    Run a single FFmpeg encoding pass.
+    Includes robust KeyboardInterrupt (Ctrl+C) handling and CPU priority management.
+    """
     pass_start_time = time.time()
     print(f"\n--- Starting FFmpeg Pass {pass_number} ---")
 
@@ -84,13 +110,16 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         '-y'
     ]
 
-    # Input file and trim
+    # Input file and trim: -ss BEFORE -i for fast seek on the source file.
     if start:
         cmd.extend(['-ss', start])
-    if end:
-        cmd.extend(['-to', end])
 
     cmd.extend(['-i', input_file])
+
+    if end:
+        # -to should be after -i for accurate time seeking after the initial seek.
+        cmd.extend(['-to', end])
+
 
     # Video filters list
     video_filters = []
@@ -101,10 +130,10 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
 
     # Core filters
     if rotate is not None:
-        # The rotate filter uses radians, so we convert the input degrees
         rotation_radians = math.radians(rotate)
         video_filters.append(f'rotate={rotation_radians}')
     if speed != 1.0:
+        # Applies speed filter before scaling/cropping/etc.
         video_filters.append(f'setpts={1/speed}*PTS')
     if scale:
         video_filters.append(f'scale=-2:{scale}')
@@ -151,16 +180,14 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     try:
         # Handle CPU priority and run the process
         if cpu_priority == 'low' and os.name == 'posix':
-            # Use 'nice' on Unix-like systems
+            # Use 'nice' on Unix-like systems (Linux, macOS, MSYS2/Git-Bash)
             cmd.insert(0, 'nice')
-            print("Running FFmpeg with low CPU priority...")
+            print("Running FFmpeg with low CPU priority (using 'nice')...")
             process = subprocess.Popen(cmd)
         elif cpu_priority == 'low' and os.name == 'nt':
-            # Use 'wmic' to set priority on Windows
-            print("Running FFmpeg with low CPU priority...")
-            # We start the process and then use wmic to set the priority
+            # Use 'wmic' to set priority on Windows. We must start the process first.
+            print("Running FFmpeg with low CPU priority (using 'wmic')...")
             process = subprocess.Popen(cmd)
-            # Use a short sleep to ensure the process has started
             time.sleep(0.5)
             wmic_cmd = [
                 'wmic', 'process', 'where', f'processid={process.pid}', 'call', 'setpriority', '256'
@@ -169,7 +196,7 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
                 subprocess.run(wmic_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             except subprocess.CalledProcessError:
                 print("Warning: Could not set process priority using 'wmic'. Make sure it's in your PATH.")
-        else: # High or no priority
+        else:
             if cpu_priority == 'high':
                 print("Running FFmpeg with high CPU priority...")
             if pass_number == 1:
@@ -182,9 +209,10 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         if process:
             process.wait()
             if process.returncode != 0:
-                 raise ScriptError(f"Error during FFmpeg pass {pass_number}: FFmpeg pass {pass_number} failed. Check the output for details.")
+                 raise ScriptError(f"Error during FFmpeg pass {pass_number}: FFmpeg pass {pass_number} failed with exit code {process.returncode}.")
 
     except KeyboardInterrupt:
+        # This block allows Ctrl+C to stop the encoding process gracefully
         print("\nInterrupt received. Terminating FFmpeg process...")
         if process and process.poll() is None:
             process.terminate()
@@ -195,7 +223,7 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
                 # If it's still alive, force kill
                 print("FFmpeg did not terminate. Forcing kill...")
                 process.kill()
-        sys.exit(1) # Exit the script
+        sys.exit(1) # Exit the script upon interruption
     except Exception as e:
         # Other potential errors
         if process and process.poll() is None:
@@ -210,15 +238,16 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
 
 def calculate_bitrates(size, effective_duration_seconds, audio_bitrate, is_audio_enabled):
     """
-    Calculates the target total and video bitrates based on target size and duration.
+    Calculates the target total and video bitrates based on target size and DURATION OF THE OUTPUT FILE.
     Returns a tuple (target_total_bitrate_kbps, target_video_bitrate_kbps).
     """
+    if effective_duration_seconds <= 0:
+         raise ScriptError("Error: Effective duration for bitrate calculation is zero or negative.")
+
     target_size_bits = size * 8 * 1024 * 1024  # MiB to bits
 
-    if effective_duration_seconds == 0:
-        raise ScriptError("Error: Video has a duration of zero. Cannot proceed.")
-
     # Calculate total bitrate with 5% overhead buffer
+    # Use 0.95 factor to leave a 5% buffer for muxing overhead
     target_total_bitrate_kbps = (target_size_bits / effective_duration_seconds) * 0.95 / 1000
 
     # Calculate target video bitrate
@@ -227,6 +256,7 @@ def calculate_bitrates(size, effective_duration_seconds, audio_bitrate, is_audio
 
     # Ensure video bitrate is not too low
     if target_video_bitrate_kbps <= MIN_VIDEO_BITRATE_KBPS:
+        print(f"Warning: Calculated video bitrate ({target_video_bitrate_kbps:.2f} kbps) is too low. Setting minimum to {MIN_VIDEO_BITRATE_KBPS} kbps.")
         target_video_bitrate_kbps = MIN_VIDEO_BITRATE_KBPS
 
     return target_total_bitrate_kbps, target_video_bitrate_kbps
@@ -239,9 +269,6 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
                     info_detail=False):
     """
     Compresses a video file to a target size using FFmpeg.
-    This function contains the core logic for the conversion process.
-    It can be called as a module function or via the main CLI.
-    The info_detail parameter controls whether to print a verbose summary.
     """
     try:
         # Check for required commands before doing anything else
@@ -251,7 +278,7 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
         script_start_time = time.time()
         script_start_datetime = datetime.now()
 
-        # Handle optional output file and overwrite check
+        # Handle optional output file
         if output_file is None:
             base, _ = os.path.splitext(os.path.basename(input_file))
             output_file = f"{base}.webm"
@@ -260,11 +287,30 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
         threads = int(os.environ.get('PY100MBIFY_THREADS', DEFAULT_THREADS))
         quality = os.environ.get('PY100MBIFY_QUALITY', DEFAULT_QUALITY)
 
-        # --- Video Info and Bitrate Calculation ---
+        # --- Video Info and Duration Calculation ---
         duration_seconds, audio_streams, video_width, video_height, video_fps = get_video_info(input_file)
 
-        # Apply speed to duration
-        effective_duration_seconds = duration_seconds / speed
+        # 1. Calculate the PHYSICAL duration of the clip being processed (takes trimming into account)
+        clip_duration_seconds = duration_seconds
+
+        start_sec = get_time_in_seconds(start) if start else 0.0
+
+        if end:
+            end_sec = get_time_in_seconds(end)
+
+            if start:
+                clip_duration_seconds = end_sec - start_sec
+            else: # Only End defined (-to after -i)
+                clip_duration_seconds = end_sec
+        elif start: # Only Start defined (-ss before -i)
+             clip_duration_seconds = duration_seconds - start_sec
+
+        # Ensure we have a valid duration to encode
+        if clip_duration_seconds <= 0:
+            raise ScriptError("Error: Calculated clip duration is zero or negative. Check --start and --end parameters.")
+
+        # 2. Apply speed factor to get the FINAL duration of the output file
+        effective_duration_seconds = clip_duration_seconds / speed
         is_audio_enabled = not mute and audio_streams
 
         target_total_bitrate_kbps, target_video_bitrate_kbps = calculate_bitrates(
@@ -275,8 +321,8 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
         )
 
         # Define pass log file based on output filename
-        # Use a temporary name based on the output file path to avoid conflicts in a loop
         log_base_name = os.path.splitext(os.path.basename(output_file))[0]
+        # Use the directory of the output file for the logs
         pass_log_file = os.path.join(os.path.dirname(output_file) or os.getcwd(), f"{log_base_name}_passlog")
 
         # --- Initial Conversion Summary (only prints if info_detail is True) ---
@@ -289,32 +335,46 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
             print("--- Video Information ---")
             print(f"Original Resolution: {video_width}x{video_height}")
             print(f"Original FPS: {video_fps:.2f}")
-            print(f"Video Duration: {duration_seconds:.2f} seconds (Effective: {effective_duration_seconds:.2f}s)")
-            if scale:
-                 print(f"Target Scale (min dimension): {scale}p")
+            print(f"Input Video Duration: {duration_seconds:.2f} seconds")
+
+            # Print Trimming/Duration details clearly
+            if start or end:
+                print(f"Trimming Start: {start if start else '0.0'} (s)")
+                print(f"Trimming End: {end if end else 'End'} (s)")
+
+            print(f"Encoded Clip Duration (Actual Content Length): {clip_duration_seconds:.2f} seconds")
+
             if speed != 1.0:
                 print(f"Playback Speed: {speed}x")
+
+            print(f"Final Output Duration (Time-Scaled): {effective_duration_seconds:.2f} seconds")
+
+            if scale:
+                 print(f"Target Scale (min dimension): {scale}p")
+            if fps:
+                 print(f"Target FPS: {fps}")
             if rotate is not None:
                 print(f"Rotation: {rotate} degrees")
-            if start and end:
-                print(f"Trimming from {start} to {end}")
-            elif start:
-                print(f"Trimming from {start} to end of video")
-            elif end:
-                print(f"Trimming from start of video to {end}")
+
             print("--- Audio Information ---")
             if not is_audio_enabled:
-                print("Audio will be muted.")
+                print("Audio will be **muted**.")
             else:
                 print(f"Audio Bitrate: {audio_bitrate} kbps (Enabled)")
+
             print("--- Calculated Bitrates ---")
             print(f"Target Total Bitrate: {target_total_bitrate_kbps:.2f} kbps")
             print(f"Target Video Bitrate: {target_video_bitrate_kbps:.2f} kbps")
-            print("--- Additional Information ---")
+
+            print("--- Additional Configuration ---")
             print(f"FFmpeg Threads: {threads}")
             print(f"VP9 Quality Setting: {quality}")
             if cpu_priority:
                 print(f"CPU Priority: {cpu_priority}")
+            if prepend_filters:
+                print(f"Prepending filters: {prepend_filters}")
+            if append_filters:
+                print(f"Appending filters: {append_filters}")
             print("--------------------------------------")
 
 
@@ -332,19 +392,16 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
         final_size_bytes = os.path.getsize(output_file)
         final_size_mib = final_size_bytes / (1024 * 1024)
 
-        # Cleanup pass log files (important for not cluttering up the directory)
+        # Cleanup pass log files
         log_path = f'{pass_log_file}-0.log'
         temp_log_path = f'{pass_log_file}-0.log.temp'
 
-        # We try to remove the logs using os.path.exists check
         for log_file in [log_path, temp_log_path]:
             try:
                 if os.path.exists(log_file):
                     os.remove(log_file)
             except OSError as e:
-                # Log a warning if cleanup fails, but don't halt the script
                 print(f"Warning: Failed to remove temporary log file {log_file}. {e}", file=sys.stderr)
-
 
         # Final report after conversion
         script_end_time = time.time()
@@ -358,12 +415,13 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
             print(f"Total Time Taken: {str(timedelta(seconds=total_time)).split('.')[0]}")
             print(f"End Time: {script_end_datetime.strftime('%Y-%m-%d %H:%M:%S')}")
 
-        return output_file, final_size_mib # Return results for the caller script
+        return output_file, final_size_mib
 
     except ScriptError as e:
         print(f"Error in compressing {input_file} segment: {e}", file=sys.stderr)
         return None, None
     except Exception as e:
+        # Catch unexpected errors and ensure a clean exit
         print(f"An unexpected error occurred during compression: {e}", file=sys.stderr)
         return None, None
 
@@ -395,7 +453,7 @@ def main():
     parser.add_argument('--append-filters', help='(Optional) FFmpeg filters to apply after standard filters.')
     args = parser.parse_args()
 
-    # Pass parsed arguments to the core compression function, ensuring info_detail is TRUE
+    # Pass parsed arguments to the core compression function, ensuring info_detail is TRUE for CLI runs
     compress_video(info_detail=True, **vars(args))
 
 
