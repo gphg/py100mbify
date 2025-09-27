@@ -4,9 +4,8 @@ import argparse
 import csv
 import os
 import sys
-import math
 from pathlib import Path
-from py100mbify.__init__ import compress_video, ScriptError, DEFAULT_TARGET_SIZE_MIB, DEFAULT_AUDIO_BITRATE_KBPS, get_video_info
+from py100mbify.__init__ import compress_video, ScriptError, DEFAULT_TARGET_SIZE_MIB, DEFAULT_AUDIO_BITRATE_KBPS, get_video_info, get_time_in_seconds
 
 # Helper function to parse arguments that are specific to the runner script
 def parse_runner_args(argv=None):
@@ -30,15 +29,17 @@ def parse_runner_args(argv=None):
         epilog='All arguments not listed above (like --size, --scale, --rotate, etc.) are passed directly to compress_video for each scene.'
     )
 
-    # We don't need to define every single py100mbify argument here, as we can pass them
-    # directly as a dict. However, for good help text and argument type checking, we
-    # re-add the most common ones.
-    compress_parser.add_argument('--size', type=int, default=DEFAULT_TARGET_SIZE_MIB)
-    compress_parser.add_argument('--audio-bitrate', type=int, default=DEFAULT_AUDIO_BITRATE_KBPS)
-    compress_parser.add_argument('--mute', action='store_true')
-    compress_parser.add_argument('--scale', type=int, default=None)
-    compress_parser.add_argument('--rotate', type=float, default=None)
-    compress_parser.add_argument('--keep-metadata', action='store_true')
+    # We re-add the most common py100mbify arguments for proper help text
+    compress_parser.add_argument('--size', type=int, default=DEFAULT_TARGET_SIZE_MIB,
+                                 help=f'Target output size in MiB for *each* scene (default: {DEFAULT_TARGET_SIZE_MIB}).')
+    compress_parser.add_argument('--audio-bitrate', type=int, default=DEFAULT_AUDIO_BITRATE_KBPS,
+                                 help=f'Target audio bitrate in kbps (default: {DEFAULT_AUDIO_BITRATE_KBPS}).')
+    compress_parser.add_argument('--mute', action='store_true', help='Mute the audio track for all scenes.')
+    compress_parser.add_argument('--speed', type=float, default=1.0, help='Video playback speed for all scenes.')
+    compress_parser.add_argument('--scale', type=int, default=None, help='The target size for the video\'s smallest dimension.')
+    compress_parser.add_argument('--rotate', type=float, default=None, help='Rotate the video by degrees.')
+    compress_parser.add_argument('--keep-metadata', action='store_true', help='Keep original metadata.')
+    compress_parser.add_argument('--cpu-priority', choices=['low', 'high'], help='Set FFmpeg process CPU priority.')
 
     # Final comprehensive parse to ensure all arguments are captured in one object
     final_args = compress_parser.parse_args(argv)
@@ -51,7 +52,6 @@ def run_scene_compression():
     try:
         args = parse_runner_args()
     except SystemExit:
-        # argparse handles printing the help/error message
         return
 
     input_file = args.input_video
@@ -78,16 +78,11 @@ def run_scene_compression():
     output_dir.mkdir(exist_ok=True)
 
     # Extract common compression arguments to pass to compress_video
-    # We take all arguments that aren't specific to the runner script
-    compression_kwargs = {
-        'size': args.size,
-        'audio_bitrate': args.audio_bitrate,
-        'mute': args.mute,
-        'scale': args.scale,
-        'rotate': args.rotate,
-        'keep_metadata': args.keep_metadata,
-        # Add any other py100mbify arguments here if you want them exposed in the runner's help text
-    }
+    # We use vars() to get a dictionary of all arguments, then filter out runner-specific ones
+    compression_kwargs = vars(args).copy()
+    del compression_kwargs['input_video']
+    del compression_kwargs['scenes_csv']
+    del compression_kwargs['output_dir']
 
     print(f"--- Starting Multi-Scene Compression ---\n"
           f"Input Video: {input_file.name}\n"
@@ -96,10 +91,10 @@ def run_scene_compression():
           f"Default Compression Args: {compression_kwargs}")
     print("----------------------------------------")
 
-    # 1. Collect all start times for calculation
+    # Collect all start times for calculation
     start_times = [float(row['Start Time (seconds)']) for row in scenes_data]
 
-    # 2. Iterate and process scenes
+    # Iterate and process scenes
     for i, scene in enumerate(scenes_data):
         scene_number = scene['Scene Number']
         start_time_sec = start_times[i]
@@ -111,8 +106,9 @@ def run_scene_compression():
             # For the last scene, use the official 'End Time (seconds)' column
             end_time_sec = float(scene['End Time (seconds)'])
 
-        # Calculate duration for the output filename
-        duration = end_time_sec - start_time_sec
+        # Convert times to string format for FFmpeg -ss / -to parameters
+        start_time_str = f"{start_time_sec:.3f}"
+        end_time_str = f"{end_time_sec:.3f}"
 
         # Construct output filename: [INPUT_BASE]-S[SCENE_NUM].webm
         base_name = input_file.stem
@@ -120,7 +116,7 @@ def run_scene_compression():
         output_path = output_dir / output_file_name
 
         print(f"\n========================================")
-        print(f"Processing Scene {scene_number} ({start_time_sec:.2f}s to {end_time_sec:.2f}s)")
+        print(f"Processing Scene {scene_number} ({start_time_str}s to {end_time_str}s)")
         print(f"Output: {output_path.name}")
         print(f"========================================")
 
@@ -128,8 +124,9 @@ def run_scene_compression():
         final_output_file, final_size_mib = compress_video(
             input_file=str(input_file),
             output_file=str(output_path),
-            start=f"{start_time_sec:.3f}",
-            end=f"{end_time_sec:.3f}",
+            start=start_time_str,
+            end=end_time_str,
+            # info_detail is automatically False here, keeping output clean
             **compression_kwargs
         )
 
