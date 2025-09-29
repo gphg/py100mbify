@@ -2,10 +2,9 @@
 
 import argparse
 import csv
-import os
 import sys
 from pathlib import Path
-from py100mbify.__init__ import compress_video, ScriptError, DEFAULT_TARGET_SIZE_MIB, DEFAULT_AUDIO_BITRATE_KBPS, get_video_info, get_time_in_seconds
+from py100mbify import compress_video, ScriptError, DEFAULT_TARGET_SIZE_MIB, DEFAULT_AUDIO_BITRATE_KBPS
 
 # Helper function to parse arguments that are specific to the runner script
 def parse_runner_args(argv=None):
@@ -40,6 +39,8 @@ def parse_runner_args(argv=None):
     compress_parser.add_argument('--rotate', type=float, default=None, help='Rotate the video by degrees.')
     compress_parser.add_argument('--keep-metadata', action='store_true', help='Keep original metadata.')
     compress_parser.add_argument('--cpu-priority', choices=['low', 'high'], help='Set FFmpeg process CPU priority.')
+    compress_parser.add_argument('--proto', action='store_true',
+                                 help='Prototype mode: Use fast, low-quality single-pass CRF encoding to quickly test clipping accuracy.') # Added proto
 
     # Final comprehensive parse to ensure all arguments are captured in one object
     final_args = compress_parser.parse_args(argv)
@@ -89,6 +90,10 @@ def run_scene_compression():
           f"Scenes Found: {len(scenes_data)}\n"
           f"Output Directory: {output_dir.resolve()}\n"
           f"Default Compression Args: {compression_kwargs}")
+
+    if args.proto:
+         print("WARNING: Running in PROTO Mode. Output quality will be low but encoding will be fast.")
+
     print("----------------------------------------")
 
     # Collect all start times for calculation
@@ -106,27 +111,32 @@ def run_scene_compression():
             # For the last scene, use the official 'End Time (seconds)' column
             end_time_sec = float(scene['End Time (seconds)'])
 
-        # Convert times to string format for FFmpeg -ss / -to parameters
+        # Calculate the duration for this scene
+        clip_duration_sec = end_time_sec - start_time_sec
+
+        # Convert times to string format for FFmpeg -ss / -t parameters
         start_time_str = f"{start_time_sec:.3f}"
-        end_time_str = f"{end_time_sec:.3f}"
 
         # Construct output filename: [INPUT_BASE]-S[SCENE_NUM].webm
         base_name = input_file.stem
-        output_file_name = f"{base_name}-S{scene_number}.webm"
+        # If in PROTO mode, append a suffix for easy identification
+        proto_suffix = "-PROTO" if args.proto else ""
+        output_file_name = f"{base_name}-S{scene_number}{proto_suffix}.webm"
         output_path = output_dir / output_file_name
 
         print(f"\n========================================")
-        print(f"Processing Scene {scene_number} ({start_time_str}s to {end_time_str}s)")
+        print(f"Processing Scene {scene_number} ({start_time_str}s for {clip_duration_sec:.3f}s)")
         print(f"Output: {output_path.name}")
         print(f"========================================")
 
         # Call the core compress_video function
+        # Note: We now pass both start and end, and the core function uses their difference as duration (-t)
         final_output_file, final_size_mib = compress_video(
             input_file=str(input_file),
             output_file=str(output_path),
             start=start_time_str,
-            end=end_time_str,
-            # info_detail is automatically False here, keeping output clean
+            end=f"{end_time_sec:.3f}", # Passed for correct duration calculation in compress_video
+            info_detail=False, # Keep false to avoid redundant prints for every scene
             **compression_kwargs
         )
 
