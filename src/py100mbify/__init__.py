@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 # --- Script Configuration ---
 REQUIRED_COMMANDS = ['ffprobe', 'ffmpeg']
 DEFAULT_TARGET_SIZE_MIB = 100  # Default target output size in MiB
-DEFAULT_AUDIO_BITRATE_KBPS = 96 # Default audio bitrate in kbps
+DEFAULT_AUDIO_BITRATE_KBPS = 192 # Default audio bitrate in kbps
 MIN_VIDEO_BITRATE_KBPS = 50
 
 # Default values for configurable FFmpeg options
