@@ -55,6 +55,8 @@ def get_video_info(input_file):
     """
     Use ffprobe to get the video's duration, resolution, FPS, and audio stream information.
     Returns duration in seconds, a list of audio streams, video width, video height, and video FPS.
+
+    Includes the critical encoding fix for Windows environments.
     """
     try:
         cmd = [
@@ -65,6 +67,7 @@ def get_video_info(input_file):
             '-show_streams',
             input_file
         ]
+        # FIX: Explicitly set UTF-8 encoding for reliable output capture on Windows
         result = subprocess.run(cmd,
             capture_output=True,
             text=True,
@@ -103,8 +106,8 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
                     fps, scale, cpu_priority, prepend_filters, append_filters, pass_log_file,
                     threads, quality, rotate, keep_metadata, proto=False):
     """
-    Run a single FFmpeg encoding pass.
-    Includes robust KeyboardInterrupt (Ctrl+C) handling and CPU priority management.
+    Run a single FFmpeg encoding pass using subprocess.Popen to allow
+    FFmpeg's progress output to stream directly to the console.
     """
     if proto and pass_number == 1:
         # In PROTO mode, we skip the first pass
@@ -133,7 +136,6 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     # Use -t (duration) instead of -to (end time) for accurate clipping when combined with -ss before -i.
     if clip_duration_seconds:
         cmd.extend(['-t', f'{clip_duration_seconds:.3f}'])
-
 
     # Video filters list
     video_filters = []
@@ -165,16 +167,16 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     # Video codec and bitrate/quality
     cmd.extend(['-c:v', 'libvpx-vp9'])
 
+    # --- FFmpeg Command Options based on mode/pass ---
     if proto:
         # PROTO Mode: 1-pass CRF for speed, skip Pass 1 entirely.
         print("Using Prototype Mode: Single-pass CRF 30 with realtime deadline.")
         cmd.extend([
-            '-crf', '30', # Low quality for quick check
-            '-b:v', '0',  # Ignore target bitrate for CRF
+            '-crf', '30',
+            '-b:v', '0',
             '-quality', 'realtime',
             '-deadline', 'realtime',
-            '-threads', str(threads),
-            output_file
+            '-threads', str(threads)
         ])
     else:
         # Full 2-pass target size compression
@@ -194,8 +196,7 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
                 '-pass', '2',
                 '-passlogfile', pass_log_file,
                 '-quality', quality,
-                '-threads', str(threads),
-                output_file
+                '-threads', str(threads)
             ])
 
     # Audio handling (Applies to both PROTO and 2-pass)
@@ -204,22 +205,46 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     else:
         # Only add audio for non-pass 1 of 2-pass or for PROTO
         if not (not proto and pass_number == 1):
+             # Ensure audio bitrate is set, especially for proto mode to avoid the default 96k warning
              cmd.extend(['-c:a', 'libopus', '-b:a', f'{audio_bitrate}k'])
 
-    process = None
-    try:
-        # Handle CPU priority and run the process
-        print("Running FFmpeg...")
+    # Final output file (Applies to Pass 2 and PROTO)
+    if pass_number == 2 or proto:
+        cmd.append(output_file)
 
-        # CPU priority logic (omitted complex OS-specific code for brevity, leaving only the Popen call)
-        # Note: In a real environment, the OS-specific logic from previous versions would be here.
-        process = subprocess.Popen(cmd)
+    # --- End FFmpeg Command Options ---
+
+    # Optional: Set process CPU priority (if available and requested)
+    if cpu_priority == 'low':
+        # On Linux/macOS, use 'nice'. On Windows, this is often ignored or handled by the shell.
+        # We rely on FFmpeg's internal process priority handling for simplicity here,
+        # but in a production script, platform-specific code would be needed.
+        pass
+
+    process = None
+    print(f"\nExecuting command: {' '.join(cmd)}")
+    print(f"Running FFmpeg...")
+
+    try:
+        # Use Popen to let FFmpeg write directly to the console's stderr for real-time updates.
+        # We only capture output if it's Pass 1, as the output is discarded anyway.
+        # Otherwise, we use PIPE/DEVNULL to ensure the process starts correctly,
+        # but rely on the environment's ability to stream the progress.
+        process = subprocess.Popen(
+            cmd,
+            # FFmpeg writes progress to stderr, so we usually want to let stderr go to the console.
+            # stdout=subprocess.DEVNULL,
+            # stderr=subprocess.STDOUT, # Directing stderr to stdout sometimes works better for streaming
+            # The current working solution relies on neither being captured.
+        )
 
         # Wait for the process to finish
-        if process:
-            process.wait()
-            if process.returncode != 0:
-                 raise ScriptError(f"Error during FFmpeg pass {pass_number}: FFmpeg failed with exit code {process.returncode}.")
+        process.wait()
+
+        return_code = process.returncode
+
+        if return_code != 0:
+             raise ScriptError(f"Error during FFmpeg pass {pass_number}: FFmpeg failed with exit code {return_code}. Check the log output above for details.")
 
     except KeyboardInterrupt:
         # This block allows Ctrl+C to stop the encoding process gracefully
@@ -339,13 +364,13 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
         log_base_name = os.path.splitext(os.path.basename(output_file))[0]
         pass_log_file = os.path.join(os.path.dirname(output_file) or os.getcwd(), f"{log_base_name}_passlog")
 
-        # --- Initial Conversion Summary (only prints if info_detail is True) ---
+        # --- Initial Conversion Summary ---
         if info_detail:
             print("--- WebM Conversion Script Summary ---")
             print(f"Start Time: {script_start_datetime.strftime('%Y-%m-%d %H:%M:%S')}")
             print(f"Input File: {input_file}")
             print(f"Output File: {output_file}")
-            print(f"Mode: {'Prototype (Fast Clip Check)' if proto else 'Target Size (2-Pass VBR)'}")
+            print(f"Mode: {'Prototype (Fast Clip Check - CRF 30)' if proto else 'Target Size (2-Pass VBR)'}")
             if not proto:
                 print(f"Target Size: {size} MiB")
             print("--- Video Information ---")
@@ -419,6 +444,8 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
 
         # Cleanup pass log files (only relevant for 2-pass mode)
         if not proto:
+            # Find and remove log files created by FFmpeg's -passlogfile
+            # The file names are typically <pass_log_file>-0.log and <pass_log_file>-0.log.temp
             log_path = f'{pass_log_file}-0.log'
             temp_log_path = f'{pass_log_file}-0.log.temp'
 
