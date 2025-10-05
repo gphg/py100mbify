@@ -65,7 +65,13 @@ def get_video_info(input_file):
             '-show_streams',
             input_file
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding='utf-8', # Use UTF-8 for reading output
+            errors='replace' # Handle potential encoding errors gracefully
+        )
         probe_output = json.loads(result.stdout)
 
         # Get duration from format section
