@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# ruff: noqa: F541
 
 import argparse
 import subprocess
@@ -124,7 +125,10 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     cmd = [
         'ffmpeg',
         '-hide_banner',
-        '-y'
+        # Skip interuption and also overwrite on existing files!
+        '-y',
+         # Prevents accidental keyboard input from stopping the process
+        '-nostdin',
     ]
 
     # Input file and trim: -ss BEFORE -i for fast seek on the source file.

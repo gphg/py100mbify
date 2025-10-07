@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# ruff: noqa: F541
 
 import argparse
 import csv
@@ -6,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 # Import necessary constants and functions for logic
-from py100mbify import compress_video, ScriptError, DEFAULT_TARGET_SIZE_MIB, DEFAULT_AUDIO_BITRATE_KBPS, get_video_info, get_time_in_seconds
+from py100mbify import compress_video, ScriptError, DEFAULT_TARGET_SIZE_MIB, DEFAULT_AUDIO_BITRATE_KBPS
 
 # Helper function to parse arguments that are specific to the runner script
 def parse_runner_args(argv=None):
@@ -45,6 +46,9 @@ def parse_runner_args(argv=None):
     compress_parser.add_argument('--cpu-priority', choices=['low', 'high'], help='Set FFmpeg process CPU priority.')
     compress_parser.add_argument('--proto', action='store_true',
                                  help='Prototype mode: Use fast, low-quality single-pass CRF encoding to quickly test clipping accuracy.')
+    compress_parser.add_argument('--fps', type=int, help='(Optional) Set a target frame rate (e.g., 30).')
+    compress_parser.add_argument('--prepend-filters', help='(Optional) FFmpeg filters to apply before standard filters.')
+    compress_parser.add_argument('--append-filters', help='(Optional) FFmpeg filters to apply after standard filters.')
 
     # Final comprehensive parse to ensure all arguments are captured in one object
     final_args = compress_parser.parse_args(argv)
@@ -63,16 +67,22 @@ def run_scene_compression():
     csv_file = args.scenes_csv
     output_dir = args.output_dir
 
-    if not input_file.exists() or not csv_file.exists():
-        sys.stderr.write(f"Error: Input file or CSV not found. Video: {input_file}, CSV: {csv_file}\n")
+    # Check input video existence first
+    if not input_file.exists():
+        sys.stderr.write(f"Error: Input video file not found at '{input_file}'.\n")
         sys.exit(1)
 
     try:
-        with open(csv_file, 'r', newline='') as f:
+        # Use explicit UTF-8 encoding. This is critical for reliable reading of files
+        # with non-ASCII characters in their name or content, especially on Windows/uv.
+        with open(csv_file, 'r', newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             scenes_data = list(reader)
+    except FileNotFoundError as e:
+        sys.stderr.write(f"Error: Scenes CSV file not found at '{csv_file}'. Ensure the path is correct.\nDetails: {e}\n")
+        sys.exit(1)
     except Exception as e:
-        sys.stderr.write(f"Error reading or parsing CSV file: {e}\n")
+        sys.stderr.write(f"Error reading or parsing CSV file. This may be due to complex paths or encoding issues on Windows.\nDetails: {e}\n")
         sys.exit(1)
 
     if not scenes_data:
@@ -174,9 +184,10 @@ def run_scene_compression():
             # Command starts with 'py100mbify' (assumed executable name)
             command = ['py100mbify']
 
-            # Input file and output path must be quoted for shell safety
-            command.append(f'"{input_file.name}"')
-            command.append(f'"{output_path}"')
+            # Input file and output path must be quoted for shell safety.
+            # Use os.fspath() for robust string representation of pathlib.Path objects.
+            command.append(f'"{os.fspath(input_file)}"')
+            command.append(f'"{os.fspath(output_path)}"')
 
             # Scene-specific trim arguments
             command.extend(['--start', start_time_str])
@@ -195,7 +206,7 @@ def run_scene_compression():
             print(f"Output: {output_path.name}")
             print(f"========================================")
 
-            # Note: compression_kwargs is NOT needed here, we just need the values from args
+            # Note: all arguments are passed explicitly from args
             final_output_file, final_size_mib = compress_video(
                 input_file=str(input_file),
                 output_file=str(output_path),
