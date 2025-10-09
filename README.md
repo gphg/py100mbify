@@ -18,7 +18,7 @@ The core of this script is a powerful 2-pass VP9 encoding routine wrapped around
 
 ### Prerequisites
 You must have FFmpeg and FFprobe installed and accessible in your system's `$PATH` (on Windows: `%PATH%`).
- * Windows/Linux/macOS: Ensure you can run ffmpeg -version and ffprobe -version successfully from your terminal. (Since you use Scoop on Windows, scoop install ffmpeg is a great way to handle this!)
+ * Windows/Linux/macOS: Ensure you can run `ffmpeg -version` and `ffprobe -version` successfully from your terminal.
 
 ### Option 1: Editable Installation (Recommended for Development)
 This method uses your pyproject.toml file to install the package in an editable state. This allows you to run the script using the clean command py100mbify from any directory on your system.
@@ -33,13 +33,17 @@ This method uses your pyproject.toml file to install the package in an editable 
    ```
    The -e flag (editable) means any changes you make to the source files (__init__.py) are reflected immediately without reinstalling.
  * Run the tool from anywhere:
+   ```bash
    py100mbify input.mp4 output.webm --size 50
+   ```
 
 ### Option 2: Direct Script Execution (No Global Install)
 If you prefer not to install the package, you can run the main script directly using Python's module execution (-m).
- * Navigate to the directory containing the py100mbify folder.
+ * Navigate to the directory containing the py100mbify directory.
  * Run the script using the module name:
-   ```python -m py100mbify input.mp4 output.webm --size 50```
+   ```
+   python -m py100mbify input.mp4 output.webm --size 50
+   ```
    Note: If you run this from inside the py100mbify directory, you should use `python __init__.py ...` instead.
 
 ## Usage
