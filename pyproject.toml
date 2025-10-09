@@ -1,9 +1,16 @@
 [project]
 name = "py100mbify"
-version = "0.1.0"
-description = "A command-line tool for compressing video files to a target size."
+version = "0.1.1"
+description = "A command-line tool for compressing video files to a target size using FFmpeg."
+readme = "README.md"
 requires-python = ">=3.8"
 dependencies = []
+keywords = ["ffmpeg", "webm", "video", "compression", "cli"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Video",
+]
 
 [project.scripts]
 py100mbify = "py100mbify:main"
