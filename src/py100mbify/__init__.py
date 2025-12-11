@@ -177,6 +177,7 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         # PROTO Mode: 1-pass CRF for speed, skip Pass 1 entirely.
         print("Using Prototype Mode: Single-pass CRF 30 with realtime deadline.")
         cmd.extend([
+            '-map_metadata', '-0:s',
             '-crf', '30',
             '-b:v', '0',
             '-quality', 'realtime',
@@ -197,6 +198,7 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         elif pass_number == 2:
             if keep_metadata:
                 cmd.extend(['-map_metadata', '0'])
+                cmd.extend(['-map_metadata', '-0:s'])
             cmd.extend([
                 '-pass', '2',
                 '-passlogfile', pass_log_file,
