@@ -134,6 +134,7 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     # Input file and trim: -ss BEFORE -i for fast seek on the source file.
     if start:
         cmd.extend(['-ss', start])
+        cmd.extend(['-copyts'])
 
     cmd.extend(['-i', input_file])
 
