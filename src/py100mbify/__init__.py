@@ -52,6 +52,19 @@ def get_time_in_seconds(time_str):
             # This is primarily for safety, FFmpeg parsing should catch timecodes
             return 0.0
 
+def escape_ffmpeg_path(path):
+    """
+    Escapes a file path for use in an FFmpeg filter string.
+    Crucial for Windows paths with backslashes and drive colons.
+    """
+    # Convert backslashes to forward slashes
+    path = path.replace('\\', '/')
+    # Escape colons (e.g., C:/ becomes C\:/)
+    path = path.replace(':', '\\:')
+    # Handle single quotes if present (rare but possible)
+    path = path.replace("'", "'\\\\''")
+    return path
+
 def get_video_info(input_file):
     """
     Use ffprobe to get the video's duration, resolution, FPS, and audio stream information.
@@ -105,7 +118,7 @@ def get_video_info(input_file):
 def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_seconds, clip_duration_seconds,
                     target_video_bitrate_kbps, audio_bitrate, mute, speed, start, end,
                     fps, scale, cpu_priority, prepend_filters, append_filters, pass_log_file,
-                    threads, quality, rotate, keep_metadata, proto=False):
+                    threads, quality, rotate, keep_metadata, hard_sub=False, proto=False):
     """
     Run a single FFmpeg encoding pass using subprocess.Popen to allow
     FFmpeg's progress output to stream directly to the console.
@@ -148,15 +161,42 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     if prepend_filters:
         video_filters.append(prepend_filters)
 
-    # Core filters
+    # --- Core filters ---
+
+    # 1. Hardsub (MUST BE FIRST to handle timestamp sync relative to source file)
+    if hard_sub:
+        start_seconds = get_time_in_seconds(start)
+        escaped_input = escape_ffmpeg_path(input_file)
+
+        # We need to burn subtitles. However, because we used Fast Seek (-ss before -i),
+        # the video timestamps start at 0, but the subtitle file expects timestamps
+        # matching the original video time (e.g. 15mins in).
+        # We use setpts to temporarily shift timestamps forward, apply subs, then shift back.
+
+        # Step A: Shift timestamps forward to match original source time
+        video_filters.append(f"setpts=PTS+({start_seconds}/TB)")
+
+        # Step B: Apply subtitles from the input file
+        video_filters.append(f"subtitles='{escaped_input}'")
+
+        # Step C: Shift timestamps back to zero (relative to clip start) for encoding
+        video_filters.append("setpts=PTS-STARTPTS")
+
+    # 2. Rotation
     if rotate is not None:
         rotation_radians = math.radians(rotate)
         video_filters.append(f'rotate={rotation_radians}')
+
+    # 3. Speed (SET PTS) - Applied after hardsub so subs aren't time-warped weirdly before rendering
     if speed != 1.0:
         # Applies speed filter before scaling/cropping/etc.
         video_filters.append(f'setpts={1/speed}*PTS')
+
+    # 4. Scale
     if scale:
         video_filters.append(f'scale=-2:{scale}')
+
+    # 5. FPS
     if fps:
         video_filters.append(f'fps={fps}')
 
@@ -312,7 +352,7 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
                     audio_bitrate=DEFAULT_AUDIO_BITRATE_KBPS, mute=False, speed=1.0,
                     start=None, end=None, fps=None, scale=None, cpu_priority=None,
                     prepend_filters=None, append_filters=None, rotate=None, keep_metadata=False,
-                    info_detail=False, proto=False):
+                    hard_sub=False, info_detail=False, proto=False):
     """
     Compresses a video file to a target size using FFmpeg.
     """
@@ -402,6 +442,8 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
                  print(f"Target FPS: {fps}")
             if rotate is not None:
                 print(f"Rotation: {rotate} degrees")
+            if hard_sub:
+                print(f"Hardsub: Enabled (Burning subtitles from {os.path.basename(input_file)})")
 
             print("--- Audio Information ---")
             if not is_audio_enabled:
@@ -432,17 +474,20 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
             # Pass 1 (only for 2-pass mode)
             run_ffmpeg_pass(1, input_file, os.devnull, effective_duration_seconds, clip_duration_seconds, target_video_bitrate_kbps,
                             audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
-                            prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata, proto=proto)
+                            prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata, 
+                            hard_sub=hard_sub, proto=proto)
 
             # Pass 2
             run_ffmpeg_pass(2, input_file, output_file, effective_duration_seconds, clip_duration_seconds, target_video_bitrate_kbps,
                             audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
-                            prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata, proto=proto)
+                            prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata, 
+                            hard_sub=hard_sub, proto=proto)
         else:
             # PROTO mode (single-pass)
             run_ffmpeg_pass(2, input_file, output_file, effective_duration_seconds, clip_duration_seconds, target_video_bitrate_kbps,
                             audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
-                            prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata, proto=proto)
+                            prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata, 
+                            hard_sub=hard_sub, proto=proto)
 
         # Get final output file size
         final_size_bytes = os.path.getsize(output_file)
@@ -506,6 +551,8 @@ def main():
                         help='(Optional) Rotate the video by the specified number of degrees. Positive values rotate clockwise, negative values rotate counter-clockwise (to the left).')
     parser.add_argument('--keep-metadata', action='store_true',
                         help='(Optional) Keep all original metadata from the input file.')
+    parser.add_argument('--hard-sub', action='store_true',
+                        help='(Optional) Burn subtitles from the input file into the video. Handles sync automatically when trimming.')
     parser.add_argument('--cpu-priority', choices=['low', 'high'],
                         help='(Optional) Set FFmpeg process CPU priority to low or high.')
     parser.add_argument('--prepend-filters', help='(Optional) FFmpeg filters to apply before standard filters.')
