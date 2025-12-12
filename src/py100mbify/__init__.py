@@ -219,7 +219,7 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         # PROTO Mode: 1-pass CRF for speed, skip Pass 1 entirely.
         print("Using Prototype Mode: Single-pass CRF 30 with realtime deadline.")
         cmd.extend([
-            '-crf', '30',
+            '-crf', '48',
             '-b:v', '0',
             '-quality', 'realtime',
             '-deadline', 'realtime',
