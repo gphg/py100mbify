@@ -124,6 +124,7 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     # Base command
     cmd = [
         'ffmpeg',
+        '-copyts',
         '-hide_banner',
         # Skip interuption and also overwrite on existing files!
         '-y',
@@ -133,7 +134,6 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
 
     # Input file and trim: -ss BEFORE -i for fast seek on the source file.
     if start:
-        cmd.extend(['-copyts'])
         cmd.extend(['-ss', start])
 
     cmd.extend(['-i', input_file])
