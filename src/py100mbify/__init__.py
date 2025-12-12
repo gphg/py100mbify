@@ -182,6 +182,9 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         # Step C: Shift timestamps back to zero (relative to clip start) for encoding
         video_filters.append("setpts=PTS-STARTPTS")
 
+        # Step D: Clear the soft subtitle, as it is not necessarily anymore
+        cmd.extend(['-sn'])
+
     # 2. Rotation
     if rotate is not None:
         rotation_radians = math.radians(rotate)
@@ -216,7 +219,6 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         # PROTO Mode: 1-pass CRF for speed, skip Pass 1 entirely.
         print("Using Prototype Mode: Single-pass CRF 30 with realtime deadline.")
         cmd.extend([
-            '-sn',
             '-crf', '30',
             '-b:v', '0',
             '-quality', 'realtime',
@@ -237,7 +239,6 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         elif pass_number == 2:
             if keep_metadata:
                 cmd.extend(['-map_metadata', '0'])
-                cmd.extend(['-sn'])
             cmd.extend([
                 '-pass', '2',
                 '-passlogfile', pass_log_file,
