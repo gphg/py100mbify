@@ -222,9 +222,10 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     # --- FFmpeg Command Options based on mode/pass ---
     if proto:
         # PROTO Mode: 1-pass CRF for speed, skip Pass 1 entirely.
-        print("Using Prototype Mode: Single-pass CRF 30 with realtime deadline.")
+        # Ensure proto holds the integer CRF value
+        print(f"Using Prototype Mode: Single-pass CRF {proto} with realtime deadline.")
         cmd.extend([
-            '-crf', '48',
+            '-crf', str(proto),
             '-b:v', '0',
             '-quality', 'realtime',
             '-deadline', 'realtime',
@@ -379,6 +380,20 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
         threads = int(os.environ.get('PY100MBIFY_THREADS', DEFAULT_THREADS))
         quality = os.environ.get('PY100MBIFY_QUALITY', DEFAULT_QUALITY)
 
+        # --- Sanitize PROTO Argument ---
+        # proto can be:
+        #   False/None (Not used)
+        #   True (Legacy/Default call, sets to 30)
+        #   int (User provided specific CRF)
+        if proto:
+            if isinstance(proto, bool):
+                proto = 30 # Default CRF
+            else:
+                proto = int(proto)
+
+            # Clamp between 30 (Best in range) and 63 (Worst/Fastest)
+            proto = max(30, min(proto, 63))
+
         # --- Video Info and Duration Calculation ---
         duration_seconds, audio_streams, video_width, video_height, video_fps = get_video_info(input_file)
 
@@ -422,7 +437,10 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
             print(f"Start Time: {script_start_datetime.strftime('%Y-%m-%d %H:%M:%S')}")
             print(f"Input File: {input_file}")
             print(f"Output File: {output_file}")
-            print(f"Mode: {'Prototype (Fast Clip Check - CRF 30)' if proto else 'Target Size (2-Pass VBR)'}")
+
+            mode_desc = f'Prototype (Fast Clip Check - CRF {proto})' if proto else 'Target Size (2-Pass VBR)'
+            print(f"Mode: {mode_desc}")
+
             if not proto:
                 print(f"Target Size: {size} MiB")
             print("--- Video Information ---")
@@ -569,8 +587,8 @@ def main():
                         help='(Optional) Set FFmpeg process CPU priority to low or high.')
     parser.add_argument('--prepend-filters', help='(Optional) FFmpeg filters to apply before standard filters.')
     parser.add_argument('--append-filters', help='(Optional) FFmpeg filters to apply after standard filters.')
-    parser.add_argument('--proto', action='store_true',
-                        help='(Optional) Prototype mode: Use fast, low-quality single-pass CRF encoding to quickly test clipping accuracy.') # Added proto
+    parser.add_argument('--proto', nargs='?', const=30, type=int, metavar='CRF',
+                        help='(Optional) Prototype mode: Use fast, low-quality single-pass CRF encoding. Optional value sets CRF (30-63, default 30).') # Updated for int value
     args = parser.parse_args()
 
     # Pass parsed arguments to the core compression function, ensuring info_detail is TRUE for CLI runs
