@@ -9,6 +9,7 @@ import shutil
 import json
 import time
 import math
+import shlex
 from datetime import datetime, timedelta
 
 # --- Script Configuration ---
@@ -118,7 +119,8 @@ def get_video_info(input_file):
 def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_seconds, clip_duration_seconds,
                     target_video_bitrate_kbps, audio_bitrate, mute, speed, start, end,
                     fps, scale, cpu_priority, prepend_filters, append_filters, pass_log_file,
-                    threads, quality, rotate, keep_metadata, hard_sub=False, target_web=False, proto=False):
+                    threads, quality, rotate, keep_metadata, hard_sub=False, target_web=False, proto=False,
+                    print_mode=False):
     """
     Run a single FFmpeg encoding pass using subprocess.Popen to allow
     FFmpeg's progress output to stream directly to the console.
@@ -129,10 +131,11 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
 
     pass_start_time = time.time()
 
-    if proto:
-        print(f"\n--- Starting FFmpeg Prototype Pass (CRF) ---")
-    else:
-        print(f"\n--- Starting FFmpeg Pass {pass_number} ---")
+    if not print_mode:
+        if proto:
+            print(f"\n--- Starting FFmpeg Prototype Pass (CRF) ---")
+        else:
+            print(f"\n--- Starting FFmpeg Pass {pass_number} ---")
 
     # Base command
     cmd = [
@@ -144,15 +147,16 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         '-nostdin',
     ]
 
-    # Input file and trim: -ss BEFORE -i for fast seek on the source file.
+    # Input file constraints (Seek and Duration)
+    # Applying these BEFORE -i means they act as input options (Fast Seek + Input Limiting)
     if start:
         cmd.extend(['-ss', start])
 
-    cmd.extend(['-i', input_file])
-
-    # Use -t (duration) instead of -to (end time) for accurate clipping when combined with -ss before -i.
+    # Use -t (duration) instead of -to (end time) for accurate clipping when combined with -ss.
     if clip_duration_seconds:
         cmd.extend(['-t', f'{clip_duration_seconds:.3f}'])
+
+    cmd.extend(['-i', input_file])
 
     # Video filters list
     video_filters = []
@@ -223,7 +227,8 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     if proto:
         # PROTO Mode: 1-pass CRF for speed, skip Pass 1 entirely.
         # Ensure proto holds the integer CRF value
-        print(f"Using Prototype Mode: Single-pass CRF {proto} with realtime deadline.")
+        if not print_mode:
+            print(f"Using Prototype Mode: Single-pass CRF {proto} with realtime deadline.")
         cmd.extend([
             '-crf', str(proto),
             '-b:v', '0',
@@ -266,6 +271,13 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         cmd.append(output_file)
 
     # --- End FFmpeg Command Options ---
+
+    # --- Print Mode Check ---
+    if print_mode:
+        print(f"\n# --- Command for Pass {pass_number} {'(Proto)' if proto else ''} ---")
+        # Use shlex.join to properly escape arguments for shell usage
+        print(shlex.join(cmd))
+        return
 
     # Optional: Set process CPU priority (if available and requested)
     if cpu_priority == 'low':
@@ -359,7 +371,8 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
                     audio_bitrate=DEFAULT_AUDIO_BITRATE_KBPS, mute=False, speed=1.0,
                     start=None, end=None, fps=None, scale=None, cpu_priority=None,
                     prepend_filters=None, append_filters=None, rotate=None, keep_metadata=False,
-                    hard_sub=False, target_web=False, info_detail=False, proto=False):
+                    hard_sub=False, target_web=False, info_detail=False, proto=False,
+                    print_mode=False):
     """
     Compresses a video file to a target size using FFmpeg.
     """
@@ -395,6 +408,7 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
             proto = max(30, min(proto, 63))
 
         # --- Video Info and Duration Calculation ---
+        # We must run this even in print_mode to get accurate duration for bitrate/filter calculations
         duration_seconds, audio_streams, video_width, video_height, video_fps = get_video_info(input_file)
 
         # 1. Calculate the PHYSICAL duration of the clip being processed (takes trimming into account)
@@ -503,19 +517,23 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
             run_ffmpeg_pass(1, input_file, os.devnull, effective_duration_seconds, clip_duration_seconds, target_video_bitrate_kbps,
                             audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
                             prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata,
-                            hard_sub=hard_sub, target_web=target_web, proto=proto)
+                            hard_sub=hard_sub, target_web=target_web, proto=proto, print_mode=print_mode)
 
             # Pass 2
             run_ffmpeg_pass(2, input_file, output_file, effective_duration_seconds, clip_duration_seconds, target_video_bitrate_kbps,
                             audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
                             prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata,
-                            hard_sub=hard_sub, target_web=target_web, proto=proto)
+                            hard_sub=hard_sub, target_web=target_web, proto=proto, print_mode=print_mode)
         else:
             # PROTO mode (single-pass)
             run_ffmpeg_pass(2, input_file, output_file, effective_duration_seconds, clip_duration_seconds, target_video_bitrate_kbps,
                             audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
                             prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata,
-                            hard_sub=hard_sub, target_web=target_web, proto=proto)
+                            hard_sub=hard_sub, target_web=target_web, proto=proto, print_mode=print_mode)
+
+        if print_mode:
+            print("\n# Commands printed. Execution skipped.")
+            return output_file, 0.0
 
         # Get final output file size
         final_size_bytes = os.path.getsize(output_file)
@@ -589,6 +607,8 @@ def main():
     parser.add_argument('--append-filters', help='(Optional) FFmpeg filters to apply after standard filters.')
     parser.add_argument('--proto', nargs='?', const=30, type=int, metavar='CRF',
                         help='(Optional) Prototype mode: Use fast, low-quality single-pass CRF encoding. Optional value sets CRF (30-63, default 30).') # Updated for int value
+    parser.add_argument('--print', dest='print_mode', action='store_true',
+                        help='(Optional) Print the FFmpeg commands and calculated parameters to stdout instead of running them. Useful for manual inspection or scripting.')
     args = parser.parse_args()
 
     # Pass parsed arguments to the core compression function, ensuring info_detail is TRUE for CLI runs
