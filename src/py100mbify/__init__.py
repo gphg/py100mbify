@@ -118,7 +118,7 @@ def get_video_info(input_file):
 def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_seconds, clip_duration_seconds,
                     target_video_bitrate_kbps, audio_bitrate, mute, speed, start, end,
                     fps, scale, cpu_priority, prepend_filters, append_filters, pass_log_file,
-                    threads, quality, rotate, keep_metadata, hard_sub=False, proto=False):
+                    threads, quality, rotate, keep_metadata, hard_sub=False, target_web=False, proto=False):
     """
     Run a single FFmpeg encoding pass using subprocess.Popen to allow
     FFmpeg's progress output to stream directly to the console.
@@ -213,6 +213,11 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
 
     # Video codec and bitrate/quality
     cmd.extend(['-c:v', 'libvpx-vp9'])
+
+    # --- Web Compatibility Flags ---
+    if target_web:
+        # Forces 8-bit color depth (yuv420p) and VP9 Profile 0
+        cmd.extend(['-pix_fmt', 'yuv420p', '-profile:v', '0'])
 
     # --- FFmpeg Command Options based on mode/pass ---
     if proto:
@@ -353,7 +358,7 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
                     audio_bitrate=DEFAULT_AUDIO_BITRATE_KBPS, mute=False, speed=1.0,
                     start=None, end=None, fps=None, scale=None, cpu_priority=None,
                     prepend_filters=None, append_filters=None, rotate=None, keep_metadata=False,
-                    hard_sub=False, info_detail=False, proto=False):
+                    hard_sub=False, target_web=False, info_detail=False, proto=False):
     """
     Compresses a video file to a target size using FFmpeg.
     """
@@ -446,6 +451,10 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
             if hard_sub:
                 print(f"Hardsub: Enabled (Burning subtitles from {os.path.basename(input_file)})")
 
+            # Print Web Compatibility Status
+            if target_web:
+                print("Web Compatibility: Enabled (Forcing 8-bit yuv420p, Profile 0)")
+
             print("--- Audio Information ---")
             if not is_audio_enabled:
                 print("Audio will be **muted**.")
@@ -475,20 +484,20 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
             # Pass 1 (only for 2-pass mode)
             run_ffmpeg_pass(1, input_file, os.devnull, effective_duration_seconds, clip_duration_seconds, target_video_bitrate_kbps,
                             audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
-                            prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata, 
-                            hard_sub=hard_sub, proto=proto)
+                            prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata,
+                            hard_sub=hard_sub, target_web=target_web, proto=proto)
 
             # Pass 2
             run_ffmpeg_pass(2, input_file, output_file, effective_duration_seconds, clip_duration_seconds, target_video_bitrate_kbps,
                             audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
-                            prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata, 
-                            hard_sub=hard_sub, proto=proto)
+                            prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata,
+                            hard_sub=hard_sub, target_web=target_web, proto=proto)
         else:
             # PROTO mode (single-pass)
             run_ffmpeg_pass(2, input_file, output_file, effective_duration_seconds, clip_duration_seconds, target_video_bitrate_kbps,
                             audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
-                            prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata, 
-                            hard_sub=hard_sub, proto=proto)
+                            prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata,
+                            hard_sub=hard_sub, target_web=target_web, proto=proto)
 
         # Get final output file size
         final_size_bytes = os.path.getsize(output_file)
@@ -554,6 +563,8 @@ def main():
                         help='(Optional) Keep all original metadata from the input file.')
     parser.add_argument('--hard-sub', action='store_true',
                         help='(Optional) Burn subtitles from the input file into the video. Handles sync automatically when trimming.')
+    parser.add_argument('--target-web', action='store_true',
+                        help='(Optional) Force 8-bit color depth (yuv420p) and VP9 Profile 0 for better web browser compatibility.')
     parser.add_argument('--cpu-priority', choices=['low', 'high'],
                         help='(Optional) Set FFmpeg process CPU priority to low or high.')
     parser.add_argument('--prepend-filters', help='(Optional) FFmpeg filters to apply before standard filters.')
