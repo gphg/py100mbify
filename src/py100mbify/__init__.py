@@ -580,7 +580,7 @@ def main():
     """Parses command-line arguments and calls the compression function."""
     parser = argparse.ArgumentParser(description='Compresses a video file to a target size using FFmpeg.')
     parser.add_argument('input_file', help='Path to the input video file.')
-    parser.add_argument('output_file', nargs='?', help='(Optional) Desired path for the output WebM video file. If omitted, saves as original input video filename with .webm extension.')
+    parser.add_argument('output_file', nargs='?', help='Desired path for the output WebM video file. If omitted, saves as original input video filename with .webm extension.')
     parser.add_argument('--size', type=int, default=DEFAULT_TARGET_SIZE_MIB,
                         help=f'Target output size in MiB. (default: {DEFAULT_TARGET_SIZE_MIB})')
     parser.add_argument('--audio-bitrate', type=int, default=DEFAULT_AUDIO_BITRATE_KBPS,
@@ -588,27 +588,27 @@ def main():
     parser.add_argument('--mute', action='store_true', help='Mute the audio track.')
     parser.add_argument('--speed', type=float, default=1.0,
                         help='Video playback speed. (e.g., 0.5 for half speed, 2.0 for double speed).')
-    parser.add_argument('--start', help='(Optional) Start time for trimming (e.g., 00:01:30 or 90).')
-    parser.add_argument('--end', help='(Optional) End time for trimming (e.g., 00:02:00 or 120).')
-    parser.add_argument('--fps', type=int, help='(Optional) Set a target frame rate (e.g., 30).')
+    parser.add_argument('--start', help='Start time for trimming (e.g., 00:01:30 or 90).')
+    parser.add_argument('--end', help='End time for trimming (e.g., 00:02:00 or 120).')
+    parser.add_argument('--fps', type=int, help='Set a target frame rate (e.g., 30).')
     parser.add_argument('--scale', type=int,
-                        help='(Optional) The target size for the video\'s smallest dimension (e.g., 720 for 720p equivalent). The other dimension will be calculated to maintain aspect ratio.')
+                        help='Target size for the video\'s smallest dimension (e.g., 720 for 720p equivalent). The other dimension will be calculated to maintain aspect ratio.')
     parser.add_argument('--rotate', type=float,
-                        help='(Optional) Rotate the video by the specified number of degrees. Positive values rotate clockwise, negative values rotate counter-clockwise (to the left).')
+                        help='Rotate the video by the specified number of degrees. Positive values rotate clockwise, negative values rotate counter-clockwise (to the left).')
     parser.add_argument('--keep-metadata', action='store_true',
-                        help='(Optional) Keep all original metadata from the input file.')
+                        help='Keep all original metadata from the input file.')
     parser.add_argument('--hard-sub', action='store_true',
-                        help='(Optional) Burn subtitles from the input file into the video. Handles sync automatically when trimming.')
+                        help='Burn subtitles from the input file into the video. Handles sync automatically when trimming.')
     parser.add_argument('--target-web', action='store_true',
-                        help='(Optional) Force 8-bit color depth (yuv420p) and VP9 Profile 0 for better web browser compatibility.')
+                        help='Force 8-bit color depth (yuv420p) and VP9 Profile 0 for better web browser compatibility.')
     parser.add_argument('--cpu-priority', choices=['low', 'high'],
-                        help='(Optional) Set FFmpeg process CPU priority to low or high.')
-    parser.add_argument('--prepend-filters', help='(Optional) FFmpeg filters to apply before standard filters.')
-    parser.add_argument('--append-filters', help='(Optional) FFmpeg filters to apply after standard filters.')
+                        help='Set FFmpeg process CPU priority to low or high.')
+    parser.add_argument('--prepend-filters', help='FFmpeg filters to apply before standard filters.')
+    parser.add_argument('--append-filters', help='FFmpeg filters to apply after standard filters.')
     parser.add_argument('--proto', nargs='?', const=30, type=int, metavar='CRF',
-                        help='(Optional) Prototype mode: Use fast, low-quality single-pass CRF encoding. Optional value sets CRF (30-63, default 30).') # Updated for int value
+                        help='Prototype mode: Use fast, low-quality single-pass CRF encoding. Optional value sets CRF (30-63, default 30).')
     parser.add_argument('--print', dest='print_mode', action='store_true',
-                        help='(Optional) Print the FFmpeg commands and calculated parameters to stdout instead of running them. Useful for manual inspection or scripting.')
+                        help='Print the FFmpeg commands and calculated parameters to stdout instead of running them. Useful for manual inspection or scripting.')
     args = parser.parse_args()
 
     # Pass parsed arguments to the core compression function, ensuring info_detail is TRUE for CLI runs
