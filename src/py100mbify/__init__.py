@@ -175,7 +175,8 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
 
     # Use -t (duration) instead of -to (end time) for accurate clipping when combined with -ss.
     if clip_duration_seconds:
-        cmd.extend(['-t', f'{clip_duration_seconds:.3f}'])
+        safe_duration = max(0, clip_duration_seconds - 0.001)
+        cmd.extend(['-t', f'{safe_duration:.3f}'])
 
     cmd.extend(['-i', input_file])
 
