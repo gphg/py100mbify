@@ -66,6 +66,27 @@ def escape_ffmpeg_path(path):
     path = path.replace("'", "'\\\\''")
     return path
 
+def get_video_filter(src_h, target_h, manual_scaler=None):
+    """
+    Determines the appropriate scaling filter string for FFmpeg.
+
+    Logic:
+    1. If a manual scaler is provided, use it.
+    2. If source height is an integer multiple of target height (e.g. 2160 -> 1080),
+       use 'neighbor' for pixel-perfect sharpness.
+    3. Otherwise, use 'bicubic' to prevent aliasing on non-integer scales.
+    """
+    if manual_scaler:
+        flags = manual_scaler
+    else:
+        # Smart detection logic
+        if src_h and target_h and src_h > 0 and (src_h % target_h == 0):
+            flags = 'neighbor'
+        else:
+            flags = 'bicubic'
+
+    return f'scale=-2:{target_h}:flags={flags}'
+
 def get_video_info(input_file):
     """
     Use ffprobe to get the video's duration, resolution, FPS, and audio stream information.
@@ -118,7 +139,7 @@ def get_video_info(input_file):
 
 def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_seconds, clip_duration_seconds,
                     target_video_bitrate_kbps, audio_bitrate, mute, speed, start, end,
-                    fps, scale, cpu_priority, prepend_filters, append_filters, pass_log_file,
+                    fps, scale_filter, cpu_priority, prepend_filters, append_filters, pass_log_file,
                     threads, quality, rotate, keep_metadata, hard_sub=False, target_web=False, proto=False,
                     print_mode=False):
     """
@@ -154,7 +175,8 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
 
     # Use -t (duration) instead of -to (end time) for accurate clipping when combined with -ss.
     if clip_duration_seconds:
-        cmd.extend(['-t', f'{clip_duration_seconds:.3f}'])
+        safe_duration = max(0, clip_duration_seconds - 0.001)
+        cmd.extend(['-t', f'{safe_duration:.3f}'])
 
     cmd.extend(['-i', input_file])
 
@@ -199,9 +221,9 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         # Applies speed filter before scaling/cropping/etc.
         video_filters.append(f'setpts={1/speed}*PTS')
 
-    # 4. Scale
-    if scale:
-        video_filters.append(f'scale=-2:{scale}')
+    # 4. Scale (Now uses the pre-calculated filter string)
+    if scale_filter:
+        video_filters.append(scale_filter)
 
     # 5. FPS
     if fps:
@@ -369,7 +391,7 @@ def calculate_bitrates(size, effective_duration_seconds, audio_bitrate, is_audio
 
 def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
                     audio_bitrate=DEFAULT_AUDIO_BITRATE_KBPS, mute=False, speed=1.0,
-                    start=None, end=None, fps=None, scale=None, cpu_priority=None,
+                    start=None, end=None, fps=None, scale=None, scaler=None, cpu_priority=None,
                     prepend_filters=None, append_filters=None, rotate=None, keep_metadata=False,
                     hard_sub=False, target_web=False, info_detail=False, proto=False,
                     print_mode=False):
@@ -445,6 +467,11 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
         log_base_name = os.path.splitext(os.path.basename(output_file))[0]
         pass_log_file = os.path.join(os.path.dirname(output_file) or os.getcwd(), f"{log_base_name}_passlog")
 
+        # --- Logic: Smart Scaling Filter Construction ---
+        scale_filter = None
+        if scale:
+            scale_filter = get_video_filter(video_height, scale, scaler)
+
         # --- Initial Conversion Summary ---
         if info_detail:
             print("--- WebM Conversion Script Summary ---")
@@ -475,7 +502,9 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
             print(f"Final Output Duration (Time-Scaled): {effective_duration_seconds:.2f} seconds")
 
             if scale:
-                 print(f"Target Scale (min dimension): {scale}p")
+                 # Extract method for display
+                 method = scale_filter.split('flags=')[-1] if 'flags=' in scale_filter else 'unknown'
+                 print(f"Target Scale: {scale}p (Method: {method})")
             if fps:
                  print(f"Target FPS: {fps}")
             if rotate is not None:
@@ -515,19 +544,19 @@ def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
         if not proto:
             # Pass 1 (only for 2-pass mode)
             run_ffmpeg_pass(1, input_file, os.devnull, effective_duration_seconds, clip_duration_seconds, target_video_bitrate_kbps,
-                            audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
+                            audio_bitrate, mute, speed, start, end, fps, scale_filter, cpu_priority,
                             prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata,
                             hard_sub=hard_sub, target_web=target_web, proto=proto, print_mode=print_mode)
 
             # Pass 2
             run_ffmpeg_pass(2, input_file, output_file, effective_duration_seconds, clip_duration_seconds, target_video_bitrate_kbps,
-                            audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
+                            audio_bitrate, mute, speed, start, end, fps, scale_filter, cpu_priority,
                             prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata,
                             hard_sub=hard_sub, target_web=target_web, proto=proto, print_mode=print_mode)
         else:
             # PROTO mode (single-pass)
             run_ffmpeg_pass(2, input_file, output_file, effective_duration_seconds, clip_duration_seconds, target_video_bitrate_kbps,
-                            audio_bitrate, mute, speed, start, end, fps, scale, cpu_priority,
+                            audio_bitrate, mute, speed, start, end, fps, scale_filter, cpu_priority,
                             prepend_filters, append_filters, pass_log_file, threads, quality, rotate, keep_metadata,
                             hard_sub=hard_sub, target_web=target_web, proto=proto, print_mode=print_mode)
 
@@ -593,6 +622,8 @@ def main():
     parser.add_argument('--fps', type=int, help='Set a target frame rate (e.g., 30).')
     parser.add_argument('--scale', type=int,
                         help='Target size for the video\'s smallest dimension (e.g., 720 for 720p equivalent). The other dimension will be calculated to maintain aspect ratio.')
+    parser.add_argument('--scaler', choices=['neighbor', 'bicubic', 'lanczos'],
+                        help='Manual scaling algorithm override. If not set, smart-selects "neighbor" for integer scale and "bicubic" otherwise.')
     parser.add_argument('--rotate', type=float,
                         help='Rotate the video by the specified number of degrees. Positive values rotate clockwise, negative values rotate counter-clockwise (to the left).')
     parser.add_argument('--keep-metadata', action='store_true',
