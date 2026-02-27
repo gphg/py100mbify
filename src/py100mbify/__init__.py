@@ -389,7 +389,7 @@ def calculate_bitrates(size, effective_duration_seconds, audio_bitrate, is_audio
     return target_total_bitrate_kbps, target_video_bitrate_kbps
 
 
-def compress_video(input_file, output_file=None, size=DEFAULT_TARGET_SIZE_MIB,
+def compress_video(input_file, output_file=None, size=float(DEFAULT_TARGET_SIZE_MIB),
                     audio_bitrate=DEFAULT_AUDIO_BITRATE_KBPS, mute=False, speed=1.0,
                     start=None, end=None, fps=None, scale=None, scaler=None, cpu_priority=None,
                     prepend_filters=None, append_filters=None, rotate=None, keep_metadata=False,
@@ -610,7 +610,7 @@ def main():
     parser = argparse.ArgumentParser(description='Compresses a video file to a target size using FFmpeg.')
     parser.add_argument('input_file', help='Path to the input video file.')
     parser.add_argument('output_file', nargs='?', help='Desired path for the output WebM video file. If omitted, saves as original input video filename with .webm extension.')
-    parser.add_argument('--size', type=int, default=DEFAULT_TARGET_SIZE_MIB,
+    parser.add_argument('--size', type=float, default=DEFAULT_TARGET_SIZE_MIB,
                         help=f'Target output size in MiB. (default: {DEFAULT_TARGET_SIZE_MIB})')
     parser.add_argument('--audio-bitrate', type=int, default=DEFAULT_AUDIO_BITRATE_KBPS,
                         help=f'Target audio bitrate in kbps. (default: {DEFAULT_AUDIO_BITRATE_KBPS})')
@@ -619,7 +619,7 @@ def main():
                         help='Video playback speed. (e.g., 0.5 for half speed, 2.0 for double speed).')
     parser.add_argument('--start', help='Start time for trimming (e.g., 00:01:30 or 90).')
     parser.add_argument('--end', help='End time for trimming (e.g., 00:02:00 or 120).')
-    parser.add_argument('--fps', type=int, help='Set a target frame rate (e.g., 30).')
+    parser.add_argument('--fps', type=float, help='Set a target frame rate (e.g., 30).')
     parser.add_argument('--scale', type=int,
                         help='Target size for the video\'s smallest dimension (e.g., 720 for 720p equivalent). The other dimension will be calculated to maintain aspect ratio.')
     parser.add_argument('--scaler', choices=['neighbor', 'bicubic', 'lanczos'],
