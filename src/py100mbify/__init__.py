@@ -240,6 +240,9 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     # Video codec and bitrate/quality
     cmd.extend(['-c:v', 'libvpx-vp9'])
 
+    # Enable Row-based Multi-threading by default for VP9 speedups
+    cmd.extend(['-row-mt', '1'])
+
     # --- Web Compatibility Flags ---
     if target_web:
         # Forces 8-bit color depth (yuv420p) and VP9 Profile 0
