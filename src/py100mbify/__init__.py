@@ -66,26 +66,29 @@ def escape_ffmpeg_path(path):
     path = path.replace("'", "'\\\\''")
     return path
 
-def get_video_filter(src_h, target_h, manual_scaler=None):
+def get_video_filter(src_w, src_h, target_scale, manual_scaler=None):
     """
-    Determines the appropriate scaling filter string for FFmpeg.
-
-    Logic:
-    1. If a manual scaler is provided, use it.
-    2. If source height is an integer multiple of target height (e.g. 2160 -> 1080),
-       use 'neighbor' for pixel-perfect sharpness.
-    3. Otherwise, use 'bicubic' to prevent aliasing on non-integer scales.
+    Smart scaling that respects orientation (Landscape vs Portrait).
+    Target_scale is applied to the 'short' side by default or height for landscape.
     """
+    # Determine scaling flags
     if manual_scaler:
         flags = manual_scaler
     else:
-        # Smart detection logic
-        if src_h and target_h and src_h > 0 and (src_h % target_h == 0):
-            flags = 'neighbor'
-        else:
-            flags = 'bicubic'
+        # Use 'neighbor' for integer downscaling to keep pixels sharp
+        # Otherwise use 'bicubic'
+        is_integer_scale = (src_h % target_scale == 0) if src_h > target_scale else False
+        flags = 'neighbor' if is_integer_scale else 'bicubic'
 
-    return f'scale=-2:{target_h}:flags={flags}'
+    # Determine Scale String based on orientation
+    if src_w < src_h:
+        # Portrait: Scale the width, calculate height
+        scale_str = f'scale={target_scale}:-2:flags={flags}'
+    else:
+        # Landscape or Square: Scale the height, calculate width
+        scale_str = f'scale=-2:{target_scale}:flags={flags}'
+
+    return scale_str
 
 def get_video_info(input_file):
     """
@@ -214,7 +217,10 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     # 2. Rotation
     if rotate is not None:
         rotation_radians = math.radians(rotate)
-        video_filters.append(f'rotate={rotation_radians}')
+        # 'ow' and 'oh' ensure the canvas expands to fit the rotated content
+        # 'bilinear=0' or similar can be used if you want to toggle interpolation
+        video_filters.append(f'rotate={rotation_radians}:ow=rotw({rotation_radians}):oh=roth({rotation_radians})')
+
 
     # 3. Speed (SET PTS) - Applied after hardsub so subs aren't time-warped weirdly before rendering
     if speed != 1.0:
@@ -286,10 +292,8 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     if mute:
         cmd.extend(['-an'])
     else:
-        # Only add audio for non-pass 1 of 2-pass or for PROTO
-        if not (not proto and pass_number == 1):
-             # Ensure audio bitrate is set, especially for proto mode to avoid the default 96k warning
-             cmd.extend(['-c:a', 'libopus', '-b:a', f'{audio_bitrate}k'])
+        # Ensure audio bitrate is set, especially for proto mode to avoid the default 96k warning
+        cmd.extend(['-c:a', 'libopus', '-b:a', f'{audio_bitrate}k'])
 
     # Final output file (Applies to Pass 2 and PROTO)
     if pass_number == 2 or proto:
@@ -414,6 +418,13 @@ def compress_video(input_file, output_file=None, size=float(DEFAULT_TARGET_SIZE_
             base, _ = os.path.splitext(os.path.basename(input_file))
             output_file = f"{base}.webm"
 
+        abs_input = os.path.abspath(input_file)
+        abs_output = os.path.abspath(output_file)
+
+        if abs_input == abs_output:
+            raise ScriptError(f"Critical Error: Input and output paths are the same ({abs_input}). "
+                              "This would overwrite your source file. Please specify a different output name.")
+
         # Read configurable FFmpeg options from environment variables with fallbacks
         threads = int(os.environ.get('PY100MBIFY_THREADS', DEFAULT_THREADS))
         quality = os.environ.get('PY100MBIFY_QUALITY', DEFAULT_QUALITY)
@@ -473,7 +484,7 @@ def compress_video(input_file, output_file=None, size=float(DEFAULT_TARGET_SIZE_
         # --- Logic: Smart Scaling Filter Construction ---
         scale_filter = None
         if scale:
-            scale_filter = get_video_filter(video_height, scale, scaler)
+            scale_filter = get_video_filter(video_width, video_height, scale, scaler)
 
         # --- Initial Conversion Summary ---
         if info_detail:
