@@ -147,29 +147,28 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
                     print_mode=False):
     """
     Refactored FFmpeg pass runner.
-    Fixes: Trailing options warning, restores progress stats, handles timing clamping,
-    fixes hard-sub sync, and adds per-pass execution timing.
+    Fixes: Trailing options, timing clamping, hard-sub sync, and GOP optimization for loops.
     """
     if proto and pass_number == 1:
         return
 
-    # 1. Global options and stats
+    # 1. Start command with global options
     cmd = ['ffmpeg', '-hide_banner', '-y', '-nostdin', '-stats']
 
     # 2. Timing Clamping Logic
     start_sec = get_time_in_seconds(start)
-    # Ensure start doesn't exceed file duration
     start_sec = max(0.0, min(start_sec, effective_duration_seconds))
 
     if start_sec > 0:
         cmd.extend(['-ss', f'{start_sec:.3f}'])
 
+    # Determine final duration for GOP calculations
+    final_duration = effective_duration_seconds - start_sec
     if clip_duration_seconds:
-        # Ensure we don't ask for more seconds than are left in the file
-        remaining = max(0, effective_duration_seconds - start_sec)
-        actual_duration = min(clip_duration_seconds, remaining)
-        if actual_duration > 0:
-            cmd.extend(['-t', f'{actual_duration:.3f}'])
+        final_duration = min(clip_duration_seconds, final_duration)
+
+    if clip_duration_seconds and final_duration > 0:
+        cmd.extend(['-t', f'{final_duration:.3f}'])
 
     cmd.extend(['-i', input_file])
 
@@ -179,12 +178,11 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
         video_filters.append(prepend_filters)
 
     if hard_sub:
-        # Fix: When trimming with -ss, subtitles need an offset to stay in sync
         escaped_input = escape_ffmpeg_path(input_file)
         video_filters.append(f"setpts=PTS+({start_sec}/TB)")
         video_filters.append(f"subtitles='{escaped_input}'")
         video_filters.append("setpts=PTS-STARTPTS")
-        cmd.append('-sn') # Drop existing subtitle streams to avoid conflicts
+        cmd.append('-sn')
 
     if rotate:
         rad = math.radians(rotate)
@@ -205,21 +203,25 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     if video_filters:
         cmd.extend(['-vf', ','.join(video_filters)])
 
-    # 4. Encoding Logic (libvpx-vp9)
+    # 4. Video Encoding & GOP Optimization
     cmd.extend(['-c:v', 'libvpx-vp9', '-row-mt', '1'])
+
+    # GOP Logic for short/looping videos
+    # If video is < 10s, set GOP to 1 second worth of frames (defaulting to 30 if fps unknown)
+    if final_duration < 10.0:
+        gop_size = int(fps) if fps else 30
+        cmd.extend(['-g', str(gop_size), '-closed-gop', '1'])
 
     if target_web:
         cmd.extend(['-pix_fmt', 'yuv420p', '-profile:v', '0'])
 
     if proto:
-        # Fast single pass for prototyping
         cmd.extend([
             '-crf', str(proto), '-b:v', '0',
             '-quality', 'realtime', '-speed', '4',
             '-threads', str(threads)
         ])
     else:
-        # Standard 2-pass target bitrate
         cmd.extend(['-b:v', f'{target_video_bitrate_kbps}k'])
         cmd.extend(['-pass', str(pass_number), '-passlogfile', pass_log_file])
 
@@ -230,7 +232,7 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
                 cmd.extend(['-map_metadata', '0'])
             cmd.extend(['-quality', quality, '-threads', str(threads)])
 
-    # 5. Audio handling (MUST be before output path)
+    # 5. Audio Settings
     if mute:
         cmd.append('-an')
     else:
@@ -252,7 +254,6 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     pass_start_time = time.time()
 
     try:
-        # subprocess.run with check=True handles exit codes properly
         subprocess.run(cmd, check=True)
 
         pass_end_time = time.time()
@@ -267,7 +268,6 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     except KeyboardInterrupt:
         print("\nProcess interrupted by user.")
         sys.exit(1)
-
 
 def calculate_bitrates(size, effective_duration_seconds, audio_bitrate, is_audio_enabled):
     """
