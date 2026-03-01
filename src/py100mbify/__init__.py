@@ -146,228 +146,127 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
                     threads, quality, rotate, keep_metadata, hard_sub=False, target_web=False, proto=False,
                     print_mode=False):
     """
-    Run a single FFmpeg encoding pass using subprocess.Popen to allow
-    FFmpeg's progress output to stream directly to the console.
+    Refactored FFmpeg pass runner.
+    Fixes: Trailing options warning, restores progress stats, handles timing clamping,
+    fixes hard-sub sync, and adds per-pass execution timing.
     """
     if proto and pass_number == 1:
-        # In PROTO mode, we skip the first pass
         return
 
-    pass_start_time = time.time()
+    # 1. Global options and stats
+    cmd = ['ffmpeg', '-hide_banner', '-y', '-nostdin', '-stats']
 
-    if not print_mode:
-        if proto:
-            print(f"\n--- Starting FFmpeg Prototype Pass (CRF) ---")
-        else:
-            print(f"\n--- Starting FFmpeg Pass {pass_number} ---")
+    # 2. Timing Clamping Logic
+    start_sec = get_time_in_seconds(start)
+    # Ensure start doesn't exceed file duration
+    start_sec = max(0.0, min(start_sec, effective_duration_seconds))
 
-    # Base command
-    cmd = [
-        'ffmpeg',
-        '-hide_banner',
-        # Skip interuption and also overwrite on existing files!
-        '-y',
-         # Prevents accidental keyboard input from stopping the process
-        '-nostdin',
-    ]
+    if start_sec > 0:
+        cmd.extend(['-ss', f'{start_sec:.3f}'])
 
-    # Input file constraints (Seek and Duration)
-    # Applying these BEFORE -i means they act as input options (Fast Seek + Input Limiting)
-    if start:
-        cmd.extend(['-ss', start])
-
-    # Use -t (duration) instead of -to (end time) for accurate clipping when combined with -ss.
     if clip_duration_seconds:
-        safe_duration = max(0, clip_duration_seconds - 0.001)
-        cmd.extend(['-t', f'{safe_duration:.3f}'])
+        # Ensure we don't ask for more seconds than are left in the file
+        remaining = max(0, effective_duration_seconds - start_sec)
+        actual_duration = min(clip_duration_seconds, remaining)
+        if actual_duration > 0:
+            cmd.extend(['-t', f'{actual_duration:.3f}'])
 
     cmd.extend(['-i', input_file])
 
-    # Video filters list
+    # 3. Video Filter Construction
     video_filters = []
-
-    # Prepend custom filters
     if prepend_filters:
         video_filters.append(prepend_filters)
 
-    # --- Core filters ---
-
-    # 1. Hardsub (MUST BE FIRST to handle timestamp sync relative to source file)
     if hard_sub:
-        start_seconds = get_time_in_seconds(start)
+        # Fix: When trimming with -ss, subtitles need an offset to stay in sync
         escaped_input = escape_ffmpeg_path(input_file)
-
-        # We need to burn subtitles. However, because we used Fast Seek (-ss before -i),
-        # the video timestamps start at 0, but the subtitle file expects timestamps
-        # matching the original video time (e.g. 15mins in).
-        # We use setpts to temporarily shift timestamps forward, apply subs, then shift back.
-
-        # Step A: Shift timestamps forward to match original source time
-        video_filters.append(f"setpts=PTS+({start_seconds}/TB)")
-
-        # Step B: Apply subtitles from the input file
+        video_filters.append(f"setpts=PTS+({start_sec}/TB)")
         video_filters.append(f"subtitles='{escaped_input}'")
-
-        # Step C: Shift timestamps back to zero (relative to clip start) for encoding
         video_filters.append("setpts=PTS-STARTPTS")
+        cmd.append('-sn') # Drop existing subtitle streams to avoid conflicts
 
-        # Step D: Clear the soft subtitle, as it is not necessarily anymore
-        cmd.extend(['-sn'])
+    if rotate:
+        rad = math.radians(rotate)
+        video_filters.append(f'rotate={rad}:ow=rotw({rad}):oh=roth({rad})')
 
-    # 2. Rotation
-    if rotate is not None:
-        rotation_radians = math.radians(rotate)
-        # 'ow' and 'oh' ensure the canvas expands to fit the rotated content
-        # 'bilinear=0' or similar can be used if you want to toggle interpolation
-        video_filters.append(f'rotate={rotation_radians}:ow=rotw({rotation_radians}):oh=roth({rotation_radians})')
-
-
-    # 3. Speed (SET PTS) - Applied after hardsub so subs aren't time-warped weirdly before rendering
     if speed != 1.0:
-        # Applies speed filter before scaling/cropping/etc.
         video_filters.append(f'setpts={1/speed}*PTS')
 
-    # 4. Scale (Now uses the pre-calculated filter string)
     if scale_filter:
         video_filters.append(scale_filter)
 
-    # 5. FPS
     if fps:
         video_filters.append(f'fps={fps}')
 
-    # Append custom filters
     if append_filters:
         video_filters.append(append_filters)
 
-    # Add video filters to command
     if video_filters:
         cmd.extend(['-vf', ','.join(video_filters)])
 
-    # Video codec and bitrate/quality
-    cmd.extend(['-c:v', 'libvpx-vp9'])
+    # 4. Encoding Logic (libvpx-vp9)
+    cmd.extend(['-c:v', 'libvpx-vp9', '-row-mt', '1'])
 
-    # Enable Row-based Multi-threading by default for VP9 speedups
-    cmd.extend(['-row-mt', '1'])
-
-    # --- Web Compatibility Flags ---
     if target_web:
-        # Forces 8-bit color depth (yuv420p) and VP9 Profile 0
         cmd.extend(['-pix_fmt', 'yuv420p', '-profile:v', '0'])
 
-    # --- FFmpeg Command Options based on mode/pass ---
     if proto:
-        # PROTO Mode: 1-pass CRF for speed, skip Pass 1 entirely.
-        # Ensure proto holds the integer CRF value
-        if not print_mode:
-            print(f"Using Prototype Mode: Single-pass CRF {proto} with realtime deadline.")
+        # Fast single pass for prototyping
         cmd.extend([
-            '-crf', str(proto),
-            '-b:v', '0',
-            '-quality', 'realtime',
-            '-deadline', 'realtime',
+            '-crf', str(proto), '-b:v', '0',
+            '-quality', 'realtime', '-speed', '4',
             '-threads', str(threads)
         ])
     else:
-        # Full 2-pass target size compression
+        # Standard 2-pass target bitrate
         cmd.extend(['-b:v', f'{target_video_bitrate_kbps}k'])
+        cmd.extend(['-pass', str(pass_number), '-passlogfile', pass_log_file])
 
         if pass_number == 1:
-            cmd.extend([
-                '-pass', '1',
-                '-passlogfile', pass_log_file,
-                '-f', 'webm',
-                os.devnull
-            ])
-        elif pass_number == 2:
+            cmd.extend(['-f', 'webm'])
+        else:
             if keep_metadata:
                 cmd.extend(['-map_metadata', '0'])
-            cmd.extend([
-                '-pass', '2',
-                '-passlogfile', pass_log_file,
-                '-quality', quality,
-                '-threads', str(threads)
-            ])
+            cmd.extend(['-quality', quality, '-threads', str(threads)])
 
-    # Audio handling (Applies to both PROTO and 2-pass)
+    # 5. Audio handling (MUST be before output path)
     if mute:
-        cmd.extend(['-an'])
+        cmd.append('-an')
     else:
-        # Ensure audio bitrate is set, especially for proto mode to avoid the default 96k warning
         cmd.extend(['-c:a', 'libopus', '-b:a', f'{audio_bitrate}k'])
 
-    # Final output file (Applies to Pass 2 and PROTO)
-    if pass_number == 2 or proto:
+    # 6. Final Argument: Output Path
+    if not proto and pass_number == 1:
+        cmd.append(os.devnull)
+    else:
         cmd.append(output_file)
 
-    # --- End FFmpeg Command Options ---
-
-    # --- Print Mode Check ---
     if print_mode:
-        print(f"\n# --- Command for Pass {pass_number} {'(Proto)' if proto else ''} ---")
-        # Use shlex.join to properly escape arguments for shell usage
+        print(f"\n# --- FFmpeg Command (Pass {pass_number}) ---")
         print(shlex.join(cmd))
         return
 
-    # Optional: Set process CPU priority (if available and requested)
-    if cpu_priority == 'low':
-        # On Linux/macOS, use 'nice'. On Windows, this is often ignored or handled by the shell.
-        # We rely on FFmpeg's internal process priority handling for simplicity here,
-        # but in a production script, platform-specific code would be needed.
-        pass
-
-    process = None
-    print(f"\nExecuting command: {' '.join(cmd)}")
-    print(f"Running FFmpeg...")
+    # 7. Execution and Timing
+    print(f"\n--- Starting Pass {pass_number} ---")
+    pass_start_time = time.time()
 
     try:
-        # Use Popen to let FFmpeg write directly to the console's stderr for real-time updates.
-        # We only capture output if it's Pass 1, as the output is discarded anyway.
-        # Otherwise, we use PIPE/DEVNULL to ensure the process starts correctly,
-        # but rely on the environment's ability to stream the progress.
-        process = subprocess.Popen(
-            cmd,
-            # FFmpeg writes progress to stderr, so we usually want to let stderr go to the console.
-            # stdout=subprocess.DEVNULL,
-            # stderr=subprocess.STDOUT, # Directing stderr to stdout sometimes works better for streaming
-            # The current working solution relies on neither being captured.
-        )
+        # subprocess.run with check=True handles exit codes properly
+        subprocess.run(cmd, check=True)
 
-        # Wait for the process to finish
-        process.wait()
+        pass_end_time = time.time()
+        elapsed = pass_end_time - pass_start_time
+        mins, secs = divmod(int(elapsed), 60)
 
-        return_code = process.returncode
+        label = "Prototype Pass" if proto else f"Pass {pass_number}"
+        print(f"\n--- FFmpeg {label} completed in {mins}m {secs}s ---")
 
-        if return_code != 0:
-             raise ScriptError(f"Error during FFmpeg pass {pass_number}: FFmpeg failed with exit code {return_code}. Check the log output above for details.")
-
+    except subprocess.CalledProcessError as e:
+        raise ScriptError(f"FFmpeg failed at pass {pass_number} (Exit Code: {e.returncode}).")
     except KeyboardInterrupt:
-        # This block allows Ctrl+C to stop the encoding process gracefully
-        print("\nInterrupt received. Terminating FFmpeg process...")
-        if process and process.poll() is None:
-            process.terminate()
-            # Wait for a brief moment for it to terminate
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                # If it's still alive, force kill
-                print("FFmpeg did not terminate. Forcing kill...")
-                process.kill()
-        sys.exit(1) # Exit the script upon interruption
-    except Exception as e:
-        # Other potential errors
-        if process and process.poll() is None:
-            process.kill() # Ensure process is killed on other errors
-        raise ScriptError(f"An unexpected error occurred during FFmpeg pass {pass_number}: {e}")
-
-    pass_end_time = time.time()
-    duration_seconds = pass_end_time - pass_start_time
-    minutes = int(duration_seconds // 60)
-    seconds = int(duration_seconds % 60)
-
-    if proto:
-        print(f"\n--- FFmpeg Prototype Pass completed in {minutes}m {seconds}s ---")
-    else:
-        print(f"\n--- FFmpeg Pass {pass_number} completed in {minutes}m {seconds}s ---")
+        print("\nProcess interrupted by user.")
+        sys.exit(1)
 
 
 def calculate_bitrates(size, effective_duration_seconds, audio_bitrate, is_audio_enabled):
