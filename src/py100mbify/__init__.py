@@ -210,7 +210,7 @@ def run_ffmpeg_pass(pass_number, input_file, output_file, effective_duration_sec
     # If video is < 10s, set GOP to 1 second worth of frames (defaulting to 30 if fps unknown)
     if final_duration < 10.0:
         gop_size = int(fps) if fps else 30
-        cmd.extend(['-g', str(gop_size), '-closed-gop', '1'])
+        cmd.extend(['-flags', '+cgop', '-g', str(gop_size)])
 
     if target_web:
         cmd.extend(['-pix_fmt', 'yuv420p', '-profile:v', '0'])
