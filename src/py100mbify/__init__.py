@@ -52,6 +52,24 @@ def escape_ffmpeg_path(path):
     path = path.replace("'", "'\\\\''")
     return path
 
+def set_process_priority(priority):
+    """Sets CPU priority for the current process and children."""
+    if not priority: return
+    try:
+        if sys.platform == 'win32':
+            import psutil
+            p = psutil.Process(os.getpid())
+            if priority == 'low':
+                p.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+            elif priority == 'high':
+                p.nice(psutil.HIGH_PRIORITY_CLASS)
+        else:
+            if priority == 'low':
+                os.nice(10)
+    except ImportError:
+        # psutil not available on Windows, skip silently or log
+        pass
+
 def get_video_info(input_file):
     """Capture video metadata with Windows-safe encoding."""
     try:
@@ -67,7 +85,7 @@ def get_video_info(input_file):
         width = video_stream.get('width', 0)
         height = video_stream.get('height', 0)
         fps_raw = video_stream.get('r_frame_rate', '0/1').split('/')
-        fps = float(fps_raw[0]) / float(fps_raw[1]) if int(fps_raw[1]) > 0 else 0
+        fps = float(fps_raw[0]) / float(fps_raw[1]) if int(fps_raw[1]) > 0 else 30.0
         audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
 
         return duration, width, height, fps, audio_streams
@@ -94,6 +112,7 @@ def run_ffmpeg_pass(pass_number, args, cfg):
 
     if args.hard_sub:
         esc = escape_ffmpeg_path(args.input_file)
+        # Burn subs requires re-aligning PTS if we used -ss
         v_filters.append(f"setpts=PTS+({cfg['start_sec']}/TB)")
         v_filters.append(f"subtitles='{esc}'")
         v_filters.append("setpts=PTS-STARTPTS")
@@ -107,6 +126,7 @@ def run_ffmpeg_pass(pass_number, args, cfg):
         v_filters.append(f"setpts={1/args.speed}*PTS")
 
     if args.scale:
+        # Automatic scaler selection: use neighbor for integer scaling
         f = args.scaler or ('neighbor' if cfg['src_h'] % args.scale == 0 else 'bicubic')
         if cfg['src_w'] < cfg['src_h']:
             v_filters.append(f"scale={args.scale}:-2:flags={f}")
@@ -119,11 +139,12 @@ def run_ffmpeg_pass(pass_number, args, cfg):
     if v_filters:
         cmd.extend(['-vf', ','.join(v_filters)])
 
-    # Video Codec Settings
+    # Video Codec Settings (VP9)
     cmd.extend(['-c:v', 'libvpx-vp9', '-row-mt', '1'])
 
+    # GOP Optimization for short clips
     if cfg['effective_duration'] < 10.0:
-        gop_size = int(args.fps or cfg['fps'] or 30)
+        gop_size = int(args.fps or cfg['fps'])
         cmd.extend(['-flags', '+cgop', '-g', str(gop_size)])
 
     if args.target_web:
@@ -135,7 +156,9 @@ def run_ffmpeg_pass(pass_number, args, cfg):
         cmd.extend(['-b:v', f"{cfg['video_bitrate']:.0f}k", '-pass', str(pass_number), '-passlogfile', cfg['log_prefix']])
         cmd.extend(['-quality', os.environ.get('PY100MBIFY_QUALITY', DEFAULT_QUALITY)])
 
-    cmd.extend(['-threads', os.environ.get('PY100MBIFY_THREADS', str(DEFAULT_THREADS))])
+    # Threading
+    threads = os.environ.get('PY100MBIFY_THREADS', str(DEFAULT_THREADS))
+    cmd.extend(['-threads', threads])
 
     if args.mute:
         cmd.append('-an')
@@ -144,39 +167,32 @@ def run_ffmpeg_pass(pass_number, args, cfg):
 
     out_path = args.output_file or f"{os.path.splitext(args.input_file)[0]}.webm"
     if not args.proto and pass_number == 1:
-        cmd.extend(['-f', 'webm', os.devnull])
+        cmd.extend(['-f', 'webm', 'NUL' if sys.platform == 'win32' else '/dev/null'])
     else:
         if args.keep_metadata:
             cmd.extend(['-map_metadata', '0'])
         cmd.append(out_path)
 
     if args.print_mode:
-        print(f"\n# --- FFmpeg Command (Pass {pass_number}) ---")
+        print(f"\n# Pass {pass_number} command:")
         print(shlex.join(cmd))
         return
 
-    # Process Priority (Non-Windows)
-    pre_exec = None
-    if args.cpu_priority == 'low' and sys.platform != 'win32':
-        pre_exec = lambda: os.nice(10)
-
     label = "Prototype Pass" if args.proto else f"Pass {pass_number}"
-    print(f"\n--- Starting {label} ---")
-    pass_start = time.time()
+    print(f"\n>>> Starting {label}...")
+    start_t = time.time()
 
     try:
-        subprocess.run(cmd, check=True, preexec_fn=pre_exec)
-
-        elapsed = time.time() - pass_start
-        mins, secs = divmod(int(elapsed), 60)
-        print(f"--- {label} completed in {mins}m {secs}s ---")
+        subprocess.run(cmd, check=True)
+        elapsed = time.time() - start_t
+        print(f">>> {label} finished in {elapsed:.2f}s")
     except subprocess.CalledProcessError as e:
-        raise ScriptError(f"FFmpeg failed at {label} (Exit Code: {e.returncode})")
+        raise ScriptError(f"FFmpeg failed (Exit Code {e.returncode}) during {label}")
 
 def main():
-    parser = argparse.ArgumentParser(description='Compress video to target size with VP9.')
-    parser.add_argument('input_file', help='Path to input video')
-    parser.add_argument('output_file', nargs='?', help='Output WebM path')
+    parser = argparse.ArgumentParser(description='Py100mbify: VP9 Target-Size Compressor')
+    parser.add_argument('input_file', help='Input video file')
+    parser.add_argument('output_file', nargs='?', help='Output WebM file')
     parser.add_argument('--size', type=float, default=100.0, help='Target size in MiB')
     parser.add_argument('--audio-bitrate', type=int, default=192)
     parser.add_argument('--mute', action='store_true')
@@ -184,39 +200,40 @@ def main():
     parser.add_argument('--start', help='Start time (HH:MM:SS or seconds)')
     parser.add_argument('--end', help='End time (HH:MM:SS or seconds)')
     parser.add_argument('--fps', type=float)
-    parser.add_argument('--scale', type=int, help='Smallest dimension scale target')
+    parser.add_argument('--scale', type=int)
     parser.add_argument('--scaler', choices=['neighbor', 'bicubic', 'lanczos'])
-    parser.add_argument('--rotate', type=float, help='Degrees to rotate')
+    parser.add_argument('--rotate', type=float)
     parser.add_argument('--keep-metadata', action='store_true')
-    parser.add_argument('--hard-sub', action='store_true', help='Burn subs with sync fix')
-    parser.add_argument('--target-web', action='store_true', help='Force VP9 Profile 0/yuv420p')
+    parser.add_argument('--hard-sub', action='store_true')
+    parser.add_argument('--target-web', action='store_true')
     parser.add_argument('--cpu-priority', choices=['low', 'high'])
     parser.add_argument('--prepend-filters')
     parser.add_argument('--append-filters')
-    parser.add_argument('--proto', nargs='?', const=30, type=int, help='Prototype pass (CRF 30-63)')
-    parser.add_argument('--print', dest='print_mode', action='store_true', help='Dry-run mode')
+    parser.add_argument('--proto', nargs='?', const=30, type=int, help='Fast CRF pass')
+    parser.add_argument('--print', dest='print_mode', action='store_true')
 
     args = parser.parse_args()
 
     try:
         check_required_commands(REQUIRED_COMMANDS)
-        script_start_time = time.time()
-        script_start_dt = datetime.now()
+        set_process_priority(args.cpu_priority)
 
+        script_start_time = time.time()
         duration, w, h, fps, audio = get_video_info(args.input_file)
 
         start_sec = get_time_in_seconds(args.start)
         end_sec = get_time_in_seconds(args.end) if args.end else duration
-        clip_duration = end_sec - start_sec
+        clip_duration = max(0, end_sec - start_sec)
         effective_duration = clip_duration / args.speed
 
         if clip_duration <= 0:
-            raise ScriptError("Calculated duration is zero or negative. Check --start and --end.")
+            raise ScriptError("Invalid duration: Start time is after End time or exceeds file length.")
 
-        # Bitrate Math
+        # Bitrate Calculation with 5% safety margin
         target_bits = args.size * 8 * 1024 * 1024
         total_bitrate = (target_bits / effective_duration) * 0.95 / 1000
-        video_bitrate = max(MIN_VIDEO_BITRATE_KBPS, total_bitrate - (0 if args.mute or not audio else args.audio_bitrate))
+        audio_bitrate = 0 if (args.mute or not audio) else args.audio_bitrate
+        video_bitrate = max(MIN_VIDEO_BITRATE_KBPS, total_bitrate - audio_bitrate)
 
         log_prefix = f"passlog_{int(time.time())}"
         cfg = {
@@ -225,53 +242,37 @@ def main():
             'log_prefix': log_prefix
         }
 
-        # Informational Header
-        print(f"--- Compression Plan ---")
-        print(f"Start Time: {script_start_dt.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Input: {args.input_file} ({duration:.2f}s)")
-        print(f"Segment: {start_sec:.2f}s -> {end_sec:.2f}s (Raw: {clip_duration:.2f}s)")
-        if args.speed != 1.0: print(f"Speed: {args.speed}x (Final Playback: {effective_duration:.2f}s)")
+        # Header Info
+        print(f"Py100mbify - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Processing: {args.input_file}")
+        print(f"Target: {args.size} MiB | Duration: {effective_duration:.2f}s")
+        if not args.proto:
+            print(f"Bitrate: {video_bitrate:.2f}k (Video) + {audio_bitrate}k (Audio)")
 
-        if args.proto:
-            print(f"Mode: PROTOTYPE (CRF: {args.proto})")
-        else:
-            print(f"Target Size: {args.size} MiB | Video Bitrate: {video_bitrate:.2f} kbps")
-
-        # Encoding Execution
         if args.proto:
             run_ffmpeg_pass(1, args, cfg)
         else:
             run_ffmpeg_pass(1, args, cfg)
             run_ffmpeg_pass(2, args, cfg)
-            # Clean up pass logs
+            # Cleanup logs
             for f in [f"{log_prefix}-0.log", f"{log_prefix}-0.log.temp"]:
                 if os.path.exists(f): os.remove(f)
 
-        if args.print_mode:
-            print("\nCommands printed. Execution skipped.")
-            sys.exit(0)
+        if not args.print_mode:
+            out_path = args.output_file or f"{os.path.splitext(args.input_file)[0]}.webm"
+            final_size = os.path.getsize(out_path) / (1024 * 1024)
+            total_time = time.time() - script_start_time
 
-        # Final Report
-        script_end_time = time.time()
-        total_elapsed = script_end_time - script_start_time
-        out_path = args.output_file or f"{os.path.splitext(args.input_file)[0]}.webm"
-
-        final_size_mib = os.path.getsize(out_path) / (1024 * 1024)
-
-        print(f"\nCompression completed successfully!")
-        print(f"Output: {out_path}")
-        print(f"Final Output Size: {final_size_mib:.2f} MiB")
-        print(f"Total Time Taken: {str(timedelta(seconds=total_elapsed)).split('.')[0]}")
-        sys.exit(0)
+            print(f"\n--- Summary ---")
+            print(f"Result: {out_path}")
+            print(f"Final Size: {final_size:.2f} MiB (Diff: {final_size - args.size:+.2f} MiB)")
+            print(f"Total Execution Time: {str(timedelta(seconds=int(total_time)))}")
 
     except ScriptError as e:
-        print(f"\nFATAL ERROR: {e}", file=sys.stderr)
-        sys.exit(1)
-    except KeyboardInterrupt:
-        print("\nProcess interrupted by user.")
+        print(f"\nError: {e}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        print(f"\nUNEXPECTED ERROR: {e}", file=sys.stderr)
+        print(f"\nUnexpected Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 if __name__ == '__main__':
