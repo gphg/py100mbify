@@ -77,9 +77,11 @@ def set_process_priority(priority):
         else:
             if priority == "low":
                 os.nice(10)
-    except (ImportError, Exception):
-        # psutil not available on Windows, skip silently or log
-        pass
+    except ImportError:
+        if priority:
+            print(
+                ">>> Warning: 'psutil' is required for CPU priority on Windows. Install with 'pip install psutil'."
+            )
 
 
 def get_video_info(input_file):
