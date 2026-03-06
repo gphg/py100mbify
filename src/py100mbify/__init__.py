@@ -294,7 +294,10 @@ def compress_video(**kwargs):
         args.size, effective_duration, args.audio_bitrate, not (args.mute or not audio)
     )
 
-    log_prefix = f"passlog_{int(time.time())}"
+    # Create a safe string from the filename (removes extension and non-alphanumeric)
+    base_name = "".join(c if c.isalnum() else "_" for c in os.path.basename(args.input_file))
+    # Use high-precision time to prevent collisions if started in the same second
+    log_prefix = f"passlog_{base_name}_{time.time():.3f}".replace(".", "_")
     cfg = {
         "start_sec": start_sec,
         "clip_duration": clip_duration,
