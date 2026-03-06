@@ -282,7 +282,13 @@ def compress_video(**kwargs):
             "Effective duration is zero or negative. Check your --start and --end parameters."
         )
 
-    out_path = args.output_file or f"{os.path.splitext(args.input_file)[0]}.webm"
+    if args.output_file:
+        out_path = args.output_file
+    else:
+        base_filename = os.path.splitext(os.path.basename(args.input_file))[0]
+        out_path = f"{base_filename}.webm"
+
+    out_dir = os.path.dirname(os.path.abspath(out_path))
 
     if os.path.abspath(args.input_file) == os.path.abspath(out_path):
         raise ScriptError(
@@ -294,10 +300,9 @@ def compress_video(**kwargs):
         args.size, effective_duration, args.audio_bitrate, not (args.mute or not audio)
     )
 
-    # Create a safe string from the filename (removes extension and non-alphanumeric)
-    base_name = "".join(c if c.isalnum() else "_" for c in os.path.basename(args.input_file))
-    # Use high-precision time to prevent collisions if started in the same second
-    log_prefix = f"passlog_{base_name}_{time.time():.3f}".replace(".", "_")
+    safe_name = "".join(c if c.isalnum() else "_" for c in os.path.basename(args.input_file))
+    log_name = f"passlog_{safe_name}_{int(time.time())}"
+    log_prefix = os.path.join(out_dir, log_name)
     cfg = {
         "start_sec": start_sec,
         "clip_duration": clip_duration,
@@ -381,7 +386,7 @@ def main():
     parser.add_argument(
         "output_file",
         nargs="?",
-        help="Output path (defaults to input name with .webm extension).",
+        help="Output path. Defaults to [input_filename].webm in the CURRENT working directory.",
     )
 
     # --- Target Constraints ---

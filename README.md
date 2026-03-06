@@ -40,6 +40,13 @@ pip install -e .
 
 ## Usage
 
+### Core Compression Command
+
+| Argument | Description | Example |
+| :--- | :--- | :--- |
+| `input_file` | Path to the source video file. **Required**. | `source.mp4` |
+| `output_file` | Output path. Defaults to the **current working directory** using the input's filename with a `.webm` extension. | `final.webm` |
+
 ### Command Categories
 
 The CLI is organized into functional groups for better clarity:
@@ -85,7 +92,7 @@ For long-running jobs (hours or days), `py100mbify` provides detailed feedback:
 
 * **Encoding Speed:** Calculated as a ratio (e.g., `0.50x` means encoding takes twice as long as the video duration).
 * **Accuracy:** Compares final file size against the requested target.
-* **History Log:** Check `py100mbify_history.log` for a persistent audit trail of all completed encodes.
+* **History Log:** Check `py100mbify_history.log` for a persistent audit trail of all completed encodes. Logs are stored in the same directory as the output file to ensure write permissions.
 
 ## License
 
