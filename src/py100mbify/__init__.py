@@ -229,7 +229,9 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
     if args_obj.mute:
         cmd.append("-an")
     else:
-        cmd.extend(["-c:a", "libopus", "-b:a", f"{args_obj.audio_bitrate}k"])
+        cmd.extend(
+            ["-c:a", "libopus", "-b:a", f"{args_obj.audio_bitrate}k", "-ac", "2"]
+        )
 
     out_path = (
         args_obj.output_file or f"{os.path.splitext(args_obj.input_file)[0]}.webm"
@@ -264,6 +266,8 @@ def compress_video(**kwargs):
     set_process_priority(args.cpu_priority)
 
     script_start_time = time.time()
+    start_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     duration, w, h, fps, audio = get_video_info(args.input_file)
 
     start_sec = get_time_in_seconds(args.start)
@@ -283,6 +287,7 @@ def compress_video(**kwargs):
             f"Output path is the same as input path: {out_path}. Please specify a different output name."
         )
 
+    # Bitrate Calculation
     total_br, video_br = calculate_bitrates(
         args.size, effective_duration, args.audio_bitrate, not (args.mute or not audio)
     )
@@ -299,32 +304,63 @@ def compress_video(**kwargs):
         "log_prefix": log_prefix,
     }
 
-    print(f"Py100mbify - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Input: {args.input_file} ({duration:.2f}s)")
-    print(f"Target: {args.size} MiB | Effective Duration: {effective_duration:.2f}s")
-    if not args.proto:
-        print(
-            f"Bitrate: {video_br:.2f}k (Video) + {args.audio_bitrate if not args.mute else 0}k (Audio)"
-        )
+    # Initial Status Report
+    header = [
+        f"Py100mbify Session Started: {start_timestamp}",
+        f"Input: {args.input_file} ({duration:.2f}s raw)",
+        f"Target Size: {args.size} MiB",
+        f"Settings: {video_br:.2f}k video, {args.audio_bitrate}k audio",
+        f"Output Path: {out_path}",
+        "-" * 40,
+    ]
+    print("\n".join(header))
 
-    if args.proto:
-        run_ffmpeg_pass(1, args, cfg)
-    else:
-        run_ffmpeg_pass(1, args, cfg)
-        run_ffmpeg_pass(2, args, cfg)
-        # Cleanup log files
-        for f in [f"{log_prefix}-0.log", f"{log_prefix}-0.log.temp"]:
-            if os.path.exists(f):
-                os.remove(f)
+    try:
+        if args.proto:
+            run_ffmpeg_pass(1, args, cfg)
+        else:
+            run_ffmpeg_pass(1, args, cfg)
+            run_ffmpeg_pass(2, args, cfg)
+    finally:
+        # Cleanup log files even on failure
+        if not args.proto:
+            for f in [f"{log_prefix}-0.log", f"{log_prefix}-0.log.temp"]:
+                if os.path.exists(f):
+                    os.remove(f)
 
-    if not args.print_mode:
-        final_size = os.path.getsize(out_path) / (1024 * 1024)
+    # Post-Encoding Analysis
+    if not args.print_mode and os.path.exists(out_path):
+        end_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         total_elapsed = time.time() - script_start_time
+        final_size = os.path.getsize(out_path) / (1024 * 1024)
 
-        print(f"\n--- Summary ---")
-        print(f"Result: {out_path}")
-        print(f"Final Size: {final_size:.2f} MiB (Target: {args.size} MiB)")
-        print(f"Total Time Taken: {str(timedelta(seconds=int(total_elapsed)))}")
+        # Calculate encoding efficiency (x-speed)
+        # e.g. 1.00x is real-time, 0.5x is half real-time
+        speed_ratio = effective_duration / total_elapsed if total_elapsed > 0 else 0
+
+        summary = [
+            f"\n--- Final Encoding Summary ---",
+            f"Finished at:     {end_timestamp}",
+            f"Total Wall Time: {str(timedelta(seconds=int(total_elapsed)))}",
+            f"Encoding Speed:  {speed_ratio:.4f}x real-time",
+            f"Result Size:     {final_size:.2f} MiB ({(final_size / args.size) * 100:.1f}% of target)",
+            f"Output File:     {out_path}",
+            "---" * 10,
+        ]
+
+        summary_text = "\n".join(summary)
+        print(summary_text)
+
+        # Persistent Log: Write to a history file so you don't lose data if the terminal closes
+        try:
+            with open("py100mbify_history.log", "a", encoding="utf-8") as f:
+                f.write(
+                    f"[{start_timestamp}] COMPLETED: {os.path.basename(args.input_file)} "
+                    f"-> {final_size:.2f}MB in {str(timedelta(seconds=int(total_elapsed)))} "
+                    f"({speed_ratio:.2f}x)\n"
+                )
+        except IOError:
+            pass  # Silently fail if log is unwritable
 
 
 def main():
