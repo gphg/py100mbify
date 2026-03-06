@@ -365,30 +365,125 @@ def compress_video(**kwargs):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Py100mbify: VP9 Target-Size Compressor"
+        prog="py100mbify",
+        description="Py100mbify: A high-precision VP9/WebM target-size compressor for Discord and web sharing.",
+        epilog="Example: py100mbify input.mp4 --size 50 --start 00:01:30 --hard-sub",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("input_file", help="Path to input video file")
-    parser.add_argument("output_file", nargs="?", help="Optional output path")
-    parser.add_argument("--size", type=float, default=100.0, help="Target size in MiB")
-    parser.add_argument("--audio-bitrate", type=int, default=192)
-    parser.add_argument("--mute", action="store_true")
-    parser.add_argument("--speed", type=float, default=1.0)
-    parser.add_argument("--start")
-    parser.add_argument("--end")
-    parser.add_argument("--fps", type=float)
-    parser.add_argument("--scale", type=int)
-    parser.add_argument("--scaler", choices=["neighbor", "bicubic", "lanczos"])
-    parser.add_argument("--rotate", type=float)
-    parser.add_argument("--keep-metadata", action="store_true")
-    parser.add_argument("--hard-sub", action="store_true")
-    parser.add_argument("--target-web", action="store_true")
-    parser.add_argument("--cpu-priority", choices=["low", "high"])
-    parser.add_argument("--prepend-filters")
-    parser.add_argument("--append-filters")
-    parser.add_argument("--proto", nargs="?", const=30, type=int)
-    parser.add_argument("--print", dest="print_mode", action="store_true")
+
+    # --- Positionals ---
+    parser.add_argument("input_file", help="Path to the source video file.")
+    parser.add_argument(
+        "output_file",
+        nargs="?",
+        help="Output path (defaults to input name with .webm extension).",
+    )
+
+    # --- Target Constraints ---
+    target_group = parser.add_argument_group("Target Options")
+    target_group.add_argument(
+        "--size",
+        type=float,
+        default=100.0,
+        metavar="MiB",
+        help="Target file size in MiB.",
+    )
+    target_group.add_argument(
+        "--audio-bitrate",
+        type=int,
+        default=192,
+        metavar="kbps",
+        help="Audio bitrate for the libopus stream.",
+    )
+    target_group.add_argument(
+        "--mute", action="store_true", help="Strip all audio tracks from the output."
+    )
+
+    # --- Clipping & Transformation ---
+    clip_group = parser.add_argument_group("Clipping & Transformation")
+    clip_group.add_argument(
+        "--start", metavar="TIME", help="Start offset (HH:MM:SS.mmm or seconds)."
+    )
+    clip_group.add_argument(
+        "--end", metavar="TIME", help="End timestamp (HH:MM:SS.mmm or seconds)."
+    )
+    clip_group.add_argument(
+        "--speed",
+        type=float,
+        default=1.0,
+        metavar="VAL",
+        help="Playback speed multiplier (e.g., 2.0 for double speed).",
+    )
+    clip_group.add_argument(
+        "--fps", type=float, metavar="VAL", help="Force a specific output frame rate."
+    )
+    clip_group.add_argument(
+        "--scale",
+        type=int,
+        metavar="PX",
+        help="Scale the short/long side to this pixel value (maintains aspect ratio).",
+    )
+    clip_group.add_argument(
+        "--scaler",
+        choices=["neighbor", "bicubic", "lanczos"],
+        help="The scaling algorithm to use.",
+    )
+    clip_group.add_argument(
+        "--rotate", type=float, metavar="DEG", help="Rotate video clockwise by degrees."
+    )
+
+    # --- Video Quality & Filters ---
+    quality_group = parser.add_argument_group("Quality & Filtering")
+    quality_group.add_argument(
+        "--hard-sub",
+        action="store_true",
+        help="Burn-in subtitles from the source file (hardcoded).",
+    )
+    quality_group.add_argument(
+        "--target-web",
+        action="store_true",
+        help="Optimize for web streaming (yuv420p, profile 0).",
+    )
+    quality_group.add_argument(
+        "--keep-metadata",
+        action="store_true",
+        help="Copy global metadata from source to output.",
+    )
+    quality_group.add_argument(
+        "--prepend-filters",
+        metavar="STR",
+        help="FFmpeg video filters to apply BEFORE internal scaling/subtitles.",
+    )
+    quality_group.add_argument(
+        "--append-filters",
+        metavar="STR",
+        help="FFmpeg video filters to apply AFTER internal logic.",
+    )
+
+    # --- Execution Control ---
+    exec_group = parser.add_argument_group("Execution Control")
+    exec_group.add_argument(
+        "--cpu-priority",
+        choices=["low", "high"],
+        help="Set process niceness (requires psutil on Windows).",
+    )
+    exec_group.add_argument(
+        "--proto",
+        nargs="?",
+        const=30,
+        type=int,
+        metavar="CRF",
+        help="Perform a fast single-pass 'prototype' encode with given CRF.",
+    )
+    exec_group.add_argument(
+        "--print",
+        dest="print_mode",
+        action="store_true",
+        help="Print the FFmpeg commands to console instead of running them.",
+    )
 
     args = parser.parse_args()
+
     try:
         compress_video(**vars(args))
     except ScriptError as e:
