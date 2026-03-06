@@ -1,22 +1,27 @@
 [project]
 name = "py100mbify"
-version = "0.2.1"
+version = "0.2.2"
 description = "A command-line tool for compressing video files to a target size using FFmpeg."
 readme = "README.md"
 requires-python = ">=3.8"
-dependencies = []
+license = {text = "Unlicense"}
 keywords = ["ffmpeg", "webm", "video", "compression", "cli"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
     "Topic :: Multimedia :: Video",
 ]
+dependencies = []
+
+[project.optional-dependencies]
+# Install on Windows with: uv pip install -e ".[windows]"
+windows = ["psutil"]
 
 [project.scripts]
 py100mbify = "py100mbify:main"
 
 [build-system]
-# Switch to setuptools for a pure-Python build chain.
+# Switch to setuptools for a pure-Python build chain (formerly uv).
 # This avoids needing Rust/maturin on lightweight environment.
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
