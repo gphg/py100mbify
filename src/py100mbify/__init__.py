@@ -235,9 +235,7 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
             ["-c:a", "libopus", "-b:a", f"{args_obj.audio_bitrate}k", "-ac", "2"]
         )
 
-    out_path = (
-        args_obj.output_file or f"{os.path.splitext(args_obj.input_file)[0]}.webm"
-    )
+    out_path = cfg["out_path"]
     if not args_obj.proto and pass_number == 1:
         cmd.extend(["-f", "webm", "NUL" if sys.platform == "win32" else "/dev/null"])
     else:
@@ -312,6 +310,7 @@ def compress_video(**kwargs):
         "src_h": h,
         "src_fps": fps,
         "log_prefix": log_prefix,
+        "out_path": out_path,
     }
 
     # Initial Status Report
