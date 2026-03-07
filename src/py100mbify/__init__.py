@@ -316,7 +316,7 @@ def compress_video(**kwargs):
         args.size, effective_duration, args.audio_bitrate, not (args.mute or not audio)
     )
 
-    safe_name = "".join(c if c.isalnum() else "_" for c in os.path.basename(args.input_file))
+    safe_name = "".join(c if c.isalnum() else "_" for c in os.path.basename(args.out_path))
     log_name = f"passlog_{safe_name}_{int(time.time())}"
     log_prefix = os.path.join(out_dir, log_name)
     cfg = {
