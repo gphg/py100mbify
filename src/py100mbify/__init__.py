@@ -350,6 +350,7 @@ def compress_video(**kwargs):
 
         summary = [
             f"\n--- Final Encoding Summary ---",
+            f"Started at:      {start_timestamp}",
             f"Finished at:     {end_timestamp}",
             f"Total Wall Time: {str(timedelta(seconds=int(total_elapsed)))}",
             f"Encoding Speed:  {speed_ratio:.4f}x real-time",
