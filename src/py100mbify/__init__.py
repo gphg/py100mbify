@@ -115,11 +115,18 @@ def get_video_info(input_file):
             raise ScriptError("No video stream found in input.")
 
         width, height = video_stream.get("width", 0), video_stream.get("height", 0)
+
         fps_raw = video_stream.get("r_frame_rate", "0/1").split("/")
+        avg_fps_raw = video_stream.get("avg_frame_rate", "0/1").split("/")
         fps = float(fps_raw[0]) / float(fps_raw[1]) if int(fps_raw[1]) > 0 else 30.0
+        avg_fps = float(avg_fps_raw[0]) / float(avg_fps_raw[1]) if int(avg_fps_raw[1]) > 0 else 30.0
+
         audio_streams = [s for s in probe["streams"] if s["codec_type"] == "audio"]
 
-        return duration, width, height, fps, audio_streams
+        # If the difference is more than a tiny fraction, it's VFR
+        is_vfr = abs(fps - avg_fps) > 0.05
+
+        return duration, width, height, fps, audio_streams, is_vfr
     except Exception as e:
         raise ScriptError(f"ffprobe failed to read file: {e}")
 
@@ -171,6 +178,12 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
         v_filters.append(f"setpts={1 / args_obj.speed}*PTS")
 
     if args_obj.scale:
+        has_manual_scale = args_obj.prepend_filters and "scale" in args_obj.prepend_filters.lower()
+
+        if has_manual_scale:
+            print(">>> Warning: Manual scale detected in --prepend-filters while --scale is also set.")
+            print(">>> The internal --scale option will be applied AFTER your manual filters.")
+
         f = args_obj.scaler or (
             "neighbor" if cfg["src_h"] % args_obj.scale == 0 else "bicubic"
         )
@@ -182,7 +195,12 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
         v_filters.append(f"scale={dim}:flags={f}")
 
     if args_obj.fps:
-        v_filters.append(f"fps={args_obj.fps}")
+        # Check if the requested FPS is significantly different from source
+        # Using a small epsilon (0.01) to account for float precision
+        if abs(args_obj.fps - cfg["src_fps"]) > 0.01:
+            v_filters.append(f"fps={args_obj.fps}")
+        else:
+            print(f">>> Info: Requested FPS ({args_obj.fps}) matches source. Skipping filter to preserve quality.")
 
     if args_obj.append_filters:
         v_filters.append(args_obj.append_filters)
@@ -268,7 +286,7 @@ def compress_video(**kwargs):
     script_start_time = time.time()
     start_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    duration, w, h, fps, audio = get_video_info(args.input_file)
+    duration, w, h, fps, audio, is_vfr = get_video_info(args.input_file)
 
     start_sec = get_time_in_seconds(args.start)
     end_sec = get_time_in_seconds(args.end) if args.end else duration
@@ -313,15 +331,35 @@ def compress_video(**kwargs):
         "out_path": out_path,
     }
 
-    # Initial Status Report
+    # Build Dynamic Info Strings
+    fps_display = f"{fps:.2f} FPS" + (" (VFR detected)" if is_vfr else " (CFR)")
+
+    # Track explicit user overrides
+    overrides = []
+    if args.fps:
+        if abs(args.fps - fps) > 0.01:
+            overrides.append(f"Target FPS: {args.fps}")
+        else:
+            overrides.append(f"Target FPS: {args.fps} (Matches Source - Ignoring)")
+
+    if args.scale: overrides.append(f"Scale: {args.scale}px ({args.scaler or 'auto'})")
+    if args.speed != 1.0: overrides.append(f"Speed: {args.speed}x")
+    if args.hard_sub: overrides.append("Hard-subs: Enabled")
+    if args.proto: overrides.append(f"Mode: Prototype (CRF {args.proto})")
+
     header = [
         f"Py100mbify Session Started: {start_timestamp}",
-        f"Input: {args.input_file} ({duration:.2f}s raw)",
+        f"Input: {os.path.basename(args.input_file)} ({duration:.2f}s raw)",
+        f"Source: {w}x{h} @ {fps_display}",
         f"Target Size: {args.size} MiB",
         f"Settings: {video_br:.2f}k video, {args.audio_bitrate}k audio",
         f"Output Path: {out_path}",
-        "-" * 40,
     ]
+
+    if overrides:
+        header.append(f"Flags:  {', '.join(overrides)}")
+
+    header.append("-" * 40)
     print("\n".join(header))
 
     try:
@@ -353,6 +391,7 @@ def compress_video(**kwargs):
             f"Finished at:     {end_timestamp}",
             f"Total Wall Time: {str(timedelta(seconds=int(total_elapsed)))}",
             f"Encoding Speed:  {speed_ratio:.4f}x real-time",
+            f"Target Size:     {args.size} MiB",
             f"Result Size:     {final_size:.2f} MiB ({(final_size / args.size) * 100:.1f}% of target)",
             f"Output File:     {out_path}",
             "---" * 10,
