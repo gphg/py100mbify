@@ -336,6 +336,12 @@ def compress_video(**kwargs):
 
     # Track explicit user overrides
     overrides = []
+
+    if args.start:
+        overrides.append(f"Start: {args.start}")
+    if args.end:
+        overrides.append(f"End: {args.end}")
+
     if args.fps:
         if abs(args.fps - fps) > 0.01:
             overrides.append(f"Target FPS: {args.fps}")
@@ -350,6 +356,7 @@ def compress_video(**kwargs):
     header = [
         f"Py100mbify Session Started: {start_timestamp}",
         f"Input: {os.path.basename(args.input_file)} ({duration:.2f}s raw)",
+        f"Clip Duration: {effective_duration:.2f}s",
         f"Source: {w}x{h} @ {fps_display}",
         f"Target Size: {args.size} MiB",
         f"Settings: {video_br:.2f}k video, {args.audio_bitrate}k audio",
@@ -405,6 +412,7 @@ def compress_video(**kwargs):
             with open("py100mbify_history.log", "a", encoding="utf-8") as f:
                 f.write(
                     f"[{start_timestamp}] COMPLETED: {os.path.basename(args.input_file)} "
+                    f"(Range: {args.start or '0'}-{args.end or 'EOF'}) "
                     f"-> {final_size:.2f}MB in {str(timedelta(seconds=int(total_elapsed)))} "
                     f"({speed_ratio:.2f}x)\n"
                 )
