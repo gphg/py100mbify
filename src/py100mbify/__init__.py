@@ -181,8 +181,10 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
         has_manual_scale = args_obj.prepend_filters and "scale" in args_obj.prepend_filters.lower()
 
         if has_manual_scale:
-            print(">>> Warning: Manual scale detected in --prepend-filters while --scale is also set.")
-            print(">>> The internal --scale option will be applied AFTER your manual filters.")
+            print(
+                ">>> Warning: Manual scale detected in --prepend-filters while --scale is also set.")
+            print(
+                ">>> The internal --scale option will be applied AFTER your manual filters.")
 
         f = args_obj.scaler or (
             "neighbor" if cfg["src_h"] % args_obj.scale == 0 else "bicubic"
@@ -290,7 +292,15 @@ def compress_video(**kwargs):
 
     start_sec = get_time_in_seconds(args.start)
     end_sec = get_time_in_seconds(args.end) if args.end else duration
-    clip_duration = max(0, end_sec - start_sec)
+    clip_duration = max(0.0, end_sec - start_sec)
+
+    # Avoid bleeding the first frame of the next clip when using fast prototype seeks.
+    # Apply a tiny adaptive epsilon only in prototype mode.
+    if args.proto:
+        src_fps = fps or 30.0
+        epsilon = max(0.001, 0.1 / float(src_fps))  # 1ms or 0.1 frame, whichever is larger
+        clip_duration = max(0.0, clip_duration - epsilon)
+
     effective_duration = clip_duration / args.speed
 
     if clip_duration <= 0:
