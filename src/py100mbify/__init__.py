@@ -144,14 +144,20 @@ def calculate_bitrates(size_mib, effective_duration, audio_kbps, is_audio_enable
 
 
 def run_ffmpeg_pass(pass_number, args_obj, cfg):
-    """Executes a single FFmpeg pass based on provided configuration."""
+    """Executes a single FFmpeg pass based on provided configuration.
+
+    This uses accurate (frame-accurate) seeking by placing -ss after -i.
+    That is slower than fast keyframe seeking but prevents bleeding the next
+    clip's first frame and yields precise clip boundaries.
+    """
     cmd = ["ffmpeg", "-hide_banner", "-y", "-nostdin", "-stats"]
 
-    # Fast Seeking
+    # Input file
+    cmd.extend(["-i", args_obj.input_file])
+
+    # Accurate Seeking (slower but frame-accurate): place -ss after -i
     if cfg["start_sec"] > 0:
         cmd.extend(["-ss", f"{cfg['start_sec']:.3f}"])
-
-    cmd.extend(["-i", args_obj.input_file])
 
     # Precise Trimming
     if cfg["clip_duration"] > 0:
@@ -181,8 +187,10 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
         has_manual_scale = args_obj.prepend_filters and "scale" in args_obj.prepend_filters.lower()
 
         if has_manual_scale:
-            print(">>> Warning: Manual scale detected in --prepend-filters while --scale is also set.")
-            print(">>> The internal --scale option will be applied AFTER your manual filters.")
+            print(
+                ">>> Warning: Manual scale detected in --prepend-filters while --scale is also set.")
+            print(
+                ">>> The internal --scale option will be applied AFTER your manual filters.")
 
         f = args_obj.scaler or (
             "neighbor" if cfg["src_h"] % args_obj.scale == 0 else "bicubic"
@@ -290,7 +298,7 @@ def compress_video(**kwargs):
 
     start_sec = get_time_in_seconds(args.start)
     end_sec = get_time_in_seconds(args.end) if args.end else duration
-    clip_duration = max(0, end_sec - start_sec)
+    clip_duration = max(0.0, end_sec - start_sec)
     effective_duration = clip_duration / args.speed
 
     if clip_duration <= 0:
