@@ -254,12 +254,14 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
     # Threading
     cmd.extend(["-threads", os.environ.get("PY100MBIFY_THREADS", str(DEFAULT_THREADS))])
 
-    if args_obj.mute:
+    # Ensure we only grab the primary video stream and primary audio stream
+    cmd.extend(["-map", "0:v:0"])
+
+    if args_obj.mute or not cfg["has_audio"]:
         cmd.append("-an")
     else:
-        cmd.extend(
-            ["-c:a", "libopus", "-b:a", f"{args_obj.audio_bitrate}k", "-ac", "2"]
-        )
+        cmd.extend(["-map", "0:a:0"])
+        cmd.extend(["-c:a", "libopus", "-b:a", f"{args_obj.audio_bitrate}k", "-ac", "2"])
 
     out_path = cfg["out_path"]
     if not args_obj.proto and pass_number == 1:
@@ -326,7 +328,7 @@ def compress_video(**kwargs):
 
     safe_name = "".join(c if c.isalnum() else "_" for c in os.path.basename(out_path))
     log_name = f"passlog_{safe_name}_{int(time.time())}"
-    log_prefix = os.path.join(out_dir, log_name)
+    log_prefix = os.path.join(out_dir, log_name).replace("\\", "/")
     cfg = {
         "start_sec": start_sec,
         "clip_duration": clip_duration,
