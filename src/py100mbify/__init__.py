@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # ruff: noqa: F541 E701
+# Repository: https://github.com/gphg/py100mbify
 
 import argparse
 import subprocess
@@ -10,6 +11,7 @@ import json
 import time
 import math
 import shlex
+import re
 from datetime import datetime, timedelta
 
 # --- Script Configuration ---
@@ -23,7 +25,6 @@ DEFAULT_QUALITY = "best"
 
 class ScriptError(Exception):
     """Custom exception for script errors."""
-
     pass
 
 
@@ -59,6 +60,80 @@ def escape_ffmpeg_path(path):
     path = path.replace(":", "\\:")
     path = path.replace("'", "'\\\\''")
     return path
+
+
+def parse_srt_time(time_str):
+    """Converts SRT time format HH:MM:SS,mmm to float seconds."""
+    h, m, s_ms = time_str.split(":")
+    s, ms = s_ms.split(",")
+    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
+
+
+def format_srt_time(seconds):
+    """Converts float seconds back to SRT time format HH:MM:SS,mmm."""
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int(round((seconds - int(seconds)) * 1000))
+
+    # Handle overflow cascades securely
+    if ms >= 1000:
+        s += 1
+        ms -= 1000
+    if s >= 60:
+        m += 1
+        s -= 60
+    if m >= 60:
+        h += 1
+        m -= 60
+
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def slice_and_shift_srt(input_srt, output_srt, segments):
+    """Reads an SRT, slices it according to multiple segments, and recalculates timestamps."""
+    with open(input_srt, "r", encoding="utf-8") as f:
+        # Standardize newlines before splitting
+        content = f.read().replace("\r\n", "\n")
+
+    # Split by double newlines to isolate subtitle blocks
+    blocks = re.split(r"\n\s*\n", content.strip())
+    new_blocks = []
+    sub_index = 1
+
+    for block in blocks:
+        lines = block.split("\n")
+        if len(lines) < 3:
+            continue
+
+        time_line = lines[1]
+        match = re.match(r"(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})", time_line)
+        if not match:
+            continue
+
+        start_sec = parse_srt_time(match.group(1))
+        end_sec = parse_srt_time(match.group(2))
+        text = "\n".join(lines[2:])
+
+        current_offset = 0.0
+        for st, en in segments:
+            # Find how much this subtitle overlaps with the current segment
+            overlap_start = max(start_sec, st)
+            overlap_end = min(end_sec, en)
+
+            # If valid overlap exists, keep and shift the timestamp relative to the concatenated file
+            if overlap_start < overlap_end:
+                new_start = overlap_start - st + current_offset
+                new_end = overlap_end - st + current_offset
+
+                new_time_line = f"{format_srt_time(new_start)} --> {format_srt_time(new_end)}"
+                new_blocks.append(f"{sub_index}\n{new_time_line}\n{text}")
+                sub_index += 1
+
+            current_offset += (en - st)
+
+    with open(output_srt, "w", encoding="utf-8") as f:
+        f.write("\n\n".join(new_blocks) + "\n")
 
 
 def set_process_priority(priority):
@@ -144,36 +219,33 @@ def calculate_bitrates(size_mib, effective_duration, audio_kbps, is_audio_enable
 
 
 def run_ffmpeg_pass(pass_number, args_obj, cfg):
-    """Executes a single FFmpeg pass based on provided configuration.
-
-    This uses accurate (frame-accurate) seeking by placing -ss after -i.
-    That is slower than fast keyframe seeking but prevents bleeding the next
-    clip's first frame and yields precise clip boundaries.
-    """
+    """Executes a single FFmpeg pass based on provided configuration."""
     cmd = ["ffmpeg", "-hide_banner", "-y", "-nostdin", "-stats"]
 
-    # Input file
-    cmd.extend(["-i", args_obj.input_file])
+    # Input file handling
+    if cfg.get("concat_file"):
+        cmd.extend(["-f", "concat", "-safe", "0", "-i", cfg["concat_file"]])
+    else:
+        cmd.extend(["-i", args_obj.input_file])
 
-    # Accurate Seeking (slower but frame-accurate): place -ss after -i
-    if cfg["start_sec"] > 0:
-        cmd.extend(["-ss", f"{cfg['start_sec']:.3f}"])
+        # Accurate Seeking for single segment
+        single_start = cfg["segments"][0][0]
+        single_duration = cfg["segments"][0][1] - single_start
 
-    # Precise Trimming
-    if cfg["clip_duration"] > 0:
-        cmd.extend(["-t", f"{cfg['clip_duration']:.3f}"])
+        if single_start > 0:
+            cmd.extend(["-ss", f"{single_start:.3f}"])
+        if single_duration > 0 and single_duration < cfg["effective_duration"] * args_obj.speed:
+            cmd.extend(["-t", f"{single_duration:.3f}"])
 
     v_filters = []
     if args_obj.prepend_filters:
         v_filters.append(args_obj.prepend_filters)
 
-    # Burn-in Subtitles with Sync Fix
-    if args_obj.hard_sub:
-        esc = escape_ffmpeg_path(args_obj.input_file)
-        # Shift PTS forward by start_sec to align subtitle stream, then back to 0
-        v_filters.append(f"setpts=PTS+({cfg['start_sec']}/TB)")
-        v_filters.append(f"subtitles='{esc}'")
-        v_filters.append("setpts=PTS-STARTPTS")
+    # Burn-in Subtitles using sliced SRT
+    if args_obj.hard_sub and cfg.get("adjusted_srt"):
+        # FFmpeg on Windows requires the colon in the drive letter to be escaped
+        safe_sub_path = os.path.abspath(cfg["adjusted_srt"]).replace("\\", "/").replace(":", "\\:")
+        v_filters.append(f"subtitles='{safe_sub_path}'")
         cmd.append("-sn")
 
     if args_obj.rotate:
@@ -254,9 +326,10 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
     # Threading
     cmd.extend(["-threads", os.environ.get("PY100MBIFY_THREADS", str(DEFAULT_THREADS))])
 
-    # Ensure we only grab the primary video stream and primary audio stream
+    # Ensure we only grab the primary video stream
     cmd.extend(["-map", "0:v:0"])
 
+    # Ghost Audio Fix & Explicit Stream Mapping
     if args_obj.mute or not cfg["has_audio"]:
         cmd.append("-an")
     else:
@@ -295,17 +368,29 @@ def compress_video(**kwargs):
 
     script_start_time = time.time()
     start_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = int(script_start_time)
 
     duration, w, h, fps, audio, is_vfr = get_video_info(args.input_file)
 
-    start_sec = get_time_in_seconds(args.start)
-    end_sec = get_time_in_seconds(args.end) if args.end else duration
-    clip_duration = max(0.0, end_sec - start_sec)
+    # Build the segment list
+    segments = []
+    if args.segment:
+        for st, en in args.segment:
+            segments.append((get_time_in_seconds(st), get_time_in_seconds(en)))
+    elif args.start or args.end:
+        st = get_time_in_seconds(args.start)
+        en = get_time_in_seconds(args.end) if args.end else duration
+        segments.append((st, en))
+    else:
+        segments.append((0.0, duration))
+
+    # Calculate total clip duration for bitrate math
+    clip_duration = sum(max(0.0, en - st) for st, en in segments)
     effective_duration = clip_duration / args.speed
 
     if clip_duration <= 0:
         raise ScriptError(
-            "Effective duration is zero or negative. Check your --start and --end parameters."
+            "Effective duration is zero or negative. Check your segment parameters."
         )
 
     if args.output_file:
@@ -321,16 +406,55 @@ def compress_video(**kwargs):
             f"Output path is the same as input path: {out_path}. Please specify a different output name."
         )
 
-    # Bitrate Calculation
+    # Subtitle Extraction and Shifting Engine
+    adjusted_srt = None
+    if args.hard_sub:
+        raw_srt = os.path.join(out_dir, f"raw_sub_{timestamp}.srt").replace("\\", "/")
+        adjusted_srt = os.path.join(out_dir, f"cut_sub_{timestamp}.srt").replace("\\", "/")
+
+        print(f">>> Info: Extracting primary subtitle track (0:s:0) for processing...")
+        ext_cmd = [
+            "ffmpeg", "-hide_banner", "-y", "-i", args.input_file,
+            "-map", "0:s:0", "-c:s", "srt", raw_srt
+        ]
+        subprocess.run(ext_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        if not os.path.exists(raw_srt) or os.path.getsize(raw_srt) == 0:
+            if os.path.exists(raw_srt): os.remove(raw_srt)
+            raise ScriptError("Failed to extract subtitles. Does the source have a text subtitle track at 0:s:0?")
+
+        print(">>> Info: Slicing and synchronizing subtitles to match segments...")
+        slice_and_shift_srt(raw_srt, adjusted_srt, segments)
+
+        # Cleanup raw extraction
+        if os.path.exists(raw_srt):
+            os.remove(raw_srt)
+
+    # Concat Demuxer File Generation
+    concat_file = None
+    if len(segments) > 1:
+        concat_file = os.path.join(out_dir, f"concat_{timestamp}.txt").replace("\\", "/")
+        with open(concat_file, "w", encoding="utf-8") as f:
+            safe_input = args.input_file.replace("'", "'\\''")
+            for st, en in segments:
+                f.write(f"file '{safe_input}'\n")
+                f.write(f"inpoint {st:.3f}\n")
+                f.write(f"outpoint {en:.3f}\n")
+
+    # Bitrate Calculation & Audio Evaluation
+    has_audio = len(audio) > 0
     total_br, video_br = calculate_bitrates(
-        args.size, effective_duration, args.audio_bitrate, not (args.mute or not audio)
+        args.size, effective_duration, args.audio_bitrate, not (args.mute or not has_audio)
     )
 
     safe_name = "".join(c if c.isalnum() else "_" for c in os.path.basename(out_path))
-    log_name = f"passlog_{safe_name}_{int(time.time())}"
+    log_name = f"passlog_{safe_name}_{timestamp}"
+
+    # Windows passlogfile escape bug fix applied here
     log_prefix = os.path.join(out_dir, log_name).replace("\\", "/")
+
     cfg = {
-        "start_sec": start_sec,
+        "segments": segments,
         "clip_duration": clip_duration,
         "effective_duration": effective_duration,
         "video_bitrate": video_br,
@@ -339,18 +463,19 @@ def compress_video(**kwargs):
         "src_fps": fps,
         "log_prefix": log_prefix,
         "out_path": out_path,
+        "concat_file": concat_file,
+        "adjusted_srt": adjusted_srt,
+        "has_audio": has_audio,
     }
 
     # Build Dynamic Info Strings
     fps_display = f"{fps:.2f} FPS" + (" (VFR detected)" if is_vfr else " (CFR)")
-
-    # Track explicit user overrides
     overrides = []
 
-    if args.start:
-        overrides.append(f"Start: {args.start}")
-    if args.end:
-        overrides.append(f"End: {args.end}")
+    if args.segment:
+        overrides.append(f"Segments: {len(segments)}")
+    elif args.start or args.end:
+        overrides.append(f"Start: {args.start or '0'} End: {args.end or 'EOF'}")
 
     if args.fps:
         if abs(args.fps - fps) > 0.01:
@@ -360,6 +485,7 @@ def compress_video(**kwargs):
 
     if args.scale: overrides.append(f"Scale: {args.scale}px ({args.scaler or 'auto'})")
     if args.speed != 1.0: overrides.append(f"Speed: {args.speed}x")
+    if args.mute or not has_audio: overrides.append("Audio: Muted/None")
     if args.hard_sub: overrides.append("Hard-subs: Enabled")
     if args.proto: overrides.append(f"Mode: Prototype (CRF {args.proto})")
 
@@ -369,7 +495,7 @@ def compress_video(**kwargs):
         f"Clip Duration: {effective_duration:.2f}s",
         f"Source: {w}x{h} @ {fps_display}",
         f"Target Size: {args.size} MiB",
-        f"Settings: {video_br:.2f}k video, {args.audio_bitrate}k audio",
+        f"Settings: {video_br:.2f}k video, {args.audio_bitrate if has_audio and not args.mute else 0}k audio",
         f"Output Path: {out_path}",
     ]
 
@@ -386,11 +512,21 @@ def compress_video(**kwargs):
             run_ffmpeg_pass(1, args, cfg)
             run_ffmpeg_pass(2, args, cfg)
     finally:
-        # Cleanup log files even on failure
+        # Secure cleanup logic for all temp files
+        cleanup_files = []
         if not args.proto:
-            for f in [f"{log_prefix}-0.log", f"{log_prefix}-0.log.temp"]:
-                if os.path.exists(f):
+            cleanup_files.extend([f"{log_prefix}-0.log", f"{log_prefix}-0.log.temp"])
+        if cfg.get("concat_file"):
+            cleanup_files.append(cfg["concat_file"])
+        if cfg.get("adjusted_srt"):
+            cleanup_files.append(cfg["adjusted_srt"])
+
+        for f in cleanup_files:
+            if os.path.exists(f):
+                try:
                     os.remove(f)
+                except OSError:
+                    pass
 
     # Post-Encoding Analysis
     if not args.print_mode and os.path.exists(out_path):
@@ -422,19 +558,19 @@ def compress_video(**kwargs):
             with open("py100mbify_history.log", "a", encoding="utf-8") as f:
                 f.write(
                     f"[{start_timestamp}] COMPLETED: {os.path.basename(args.input_file)} "
-                    f"(Range: {args.start or '0'}-{args.end or 'EOF'}) "
+                    f"(Segments: {len(segments)}) "
                     f"-> {final_size:.2f}MB in {str(timedelta(seconds=int(total_elapsed)))} "
                     f"({speed_ratio:.2f}x)\n"
                 )
         except IOError:
-            pass  # Silently fail if log is unwritable
+            pass
 
 
 def main():
     parser = argparse.ArgumentParser(
         prog="py100mbify",
         description="Py100mbify: A high-precision VP9/WebM target-size compressor for Discord and web sharing.",
-        epilog="Example: py100mbify input.mp4 --size 50 --start 00:01:30 --hard-sub",
+        epilog="Example: py100mbify input.mp4 --size 50 --segment 00:01:30 00:05:00 --hard-sub",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -469,10 +605,17 @@ def main():
     # --- Clipping & Transformation ---
     clip_group = parser.add_argument_group("Clipping & Transformation")
     clip_group.add_argument(
-        "--start", metavar="TIME", help="Start offset (HH:MM:SS.mmm or seconds)."
+        "--segment",
+        action="append",
+        nargs=2,
+        metavar=("START", "END"),
+        help="Specify multiple segments to keep. Example: --segment 00:00 01:30 --segment 02:45 05:00",
     )
     clip_group.add_argument(
-        "--end", metavar="TIME", help="End timestamp (HH:MM:SS.mmm or seconds)."
+        "--start", metavar="TIME", help="Start offset (HH:MM:SS.mmm or seconds). (Fallback for single cut)"
+    )
+    clip_group.add_argument(
+        "--end", metavar="TIME", help="End timestamp (HH:MM:SS.mmm or seconds). (Fallback for single cut)"
     )
     clip_group.add_argument(
         "--speed",
@@ -504,7 +647,7 @@ def main():
     quality_group.add_argument(
         "--hard-sub",
         action="store_true",
-        help="Burn-in subtitles from the source file (hardcoded).",
+        help="Burn-in subtitles from the primary source track (0:s:0).",
     )
     quality_group.add_argument(
         "--target-web",
