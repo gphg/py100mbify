@@ -234,7 +234,9 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
 
         if single_start > 0:
             cmd.extend(["-ss", f"{single_start:.3f}"])
-        if single_duration > 0 and single_duration < cfg["effective_duration"] * args_obj.speed:
+
+        # Compare against the raw duration of the source file
+        if single_duration > 0 and single_duration < cfg.get("raw_duration", float('inf')):
             cmd.extend(["-t", f"{single_duration:.3f}"])
 
     v_filters = []
@@ -457,6 +459,7 @@ def compress_video(**kwargs):
         "segments": segments,
         "clip_duration": clip_duration,
         "effective_duration": effective_duration,
+        "raw_duration": duration,  # ADDED: Store raw duration for accurate -t checking
         "video_bitrate": video_br,
         "src_w": w,
         "src_h": h,
@@ -564,6 +567,24 @@ def compress_video(**kwargs):
                 )
         except IOError:
             pass
+
+
+def sanitize_input_args(args):
+    """
+    Strips leading/trailing whitespace and removes invisible control characters
+    from CLI arguments to prevent silent parsing failures (especially from CSVs).
+    """
+    cleaned = []
+    # Regex for zero-width spaces, BOM, and unexpected control chars.
+    # Avoids stripping standard visible ASCII, newlines (\n), or valid UTF-8.
+    invisible_chars = re.compile(r'[\u200b\u200c\u200d\u2060\ufeff\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+    for arg in args:
+        # Remove invisible characters entirely
+        clean_arg = invisible_chars.sub('', arg)
+        # Strip standard leading/trailing whitespace (\r, \n, \t, spaces)
+        clean_arg = clean_arg.strip()
+        cleaned.append(clean_arg)
+    return cleaned
 
 
 def main():
@@ -692,7 +713,9 @@ def main():
         help="Print the FFmpeg commands to console instead of running them.",
     )
 
-    args = parser.parse_args()
+    # Process and sanitize sys.argv before argparse parses it
+    clean_sys_argv = sanitize_input_args(sys.argv[1:])
+    args = parser.parse_args(clean_sys_argv)
 
     try:
         compress_video(**vars(args))
