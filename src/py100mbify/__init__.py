@@ -222,13 +222,11 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
     """Executes a single FFmpeg pass based on provided configuration."""
     cmd = ["ffmpeg", "-hide_banner", "-y", "-nostdin", "-stats"]
 
-    # Input file handling
-    if cfg.get("concat_file"):
-        cmd.extend(["-f", "concat", "-safe", "0", "-i", cfg["concat_file"]])
-    else:
-        cmd.extend(["-i", args_obj.input_file])
+    # Native video input mapping
+    cmd.extend(["-i", args_obj.input_file])
 
-        # Accurate Seeking for single segment
+    if not cfg.get("filter_complex"):
+        # Accurate Seeking optimization for single segment cuts
         single_start = cfg["segments"][0][0]
         single_duration = cfg["segments"][0][1] - single_start
 
@@ -261,10 +259,8 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
         has_manual_scale = args_obj.prepend_filters and "scale" in args_obj.prepend_filters.lower()
 
         if has_manual_scale:
-            print(
-                ">>> Warning: Manual scale detected in --prepend-filters while --scale is also set.")
-            print(
-                ">>> The internal --scale option will be applied AFTER your manual filters.")
+            print(">>> Warning: Manual scale detected in --prepend-filters while --scale is also set.")
+            print(">>> The internal --scale option will be applied AFTER your manual filters.")
 
         f = args_obj.scaler or (
             "neighbor" if cfg["src_h"] % args_obj.scale == 0 else "bicubic"
@@ -287,15 +283,28 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
     if args_obj.append_filters:
         v_filters.append(args_obj.append_filters)
 
-    if v_filters:
-        cmd.extend(["-vf", ",".join(v_filters)])
+    # Routing Filter Complex graphs safely alongside optional parameter expansions
+    if cfg.get("filter_complex"):
+        fc_str = cfg["filter_complex"]
+        current_video_node = "[vseg]"
+        if v_filters:
+            fc_str += f";{current_video_node}{','.join(v_filters)}[vfinal]"
+            current_video_node = "[vfinal]"
+        cmd.extend(["-filter_complex", fc_str])
+        video_map = current_video_node
+        audio_map = cfg["audio_map"]
+    else:
+        if v_filters:
+            cmd.extend(["-vf", ",".join(v_filters)])
+        video_map = "0:v:0"
+        audio_map = "0:a:0" if cfg["has_audio"] and not args_obj.mute else None
 
     # Codec Settings
     cmd.extend(["-c:v", "libvpx-vp9", "-row-mt", "1"])
     if cfg["effective_duration"] < 10.0:
         # Optimized GOP for short clips
-        cmd.extend(["-keyint_min", str(int(args_obj.fps or cfg["src_fps"]))])
-        cmd.extend(["-flags", "+cgop", "-g", str(int(args_obj.fps or cfg["src_fps"]))])
+        fps_str = str(int(args_obj.fps or cfg["src_fps"]))
+        cmd.extend(["-flags", "+cgop", "-keyint_min", fps_str, "-g", fps_str])
     else:
         cmd.extend(["-keyint_min", "150", "-g", "150"])
 
@@ -331,14 +340,13 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
     # Threading
     cmd.extend(["-threads", os.environ.get("PY100MBIFY_THREADS", str(DEFAULT_THREADS))])
 
-    # Ensure we only grab the primary video stream
-    cmd.extend(["-map", "0:v:0"])
+    # Route explicit map stream nodes
+    cmd.extend(["-map", video_map])
 
-    # Ghost Audio Fix & Explicit Stream Mapping
-    if args_obj.mute or not cfg["has_audio"]:
+    if args_obj.mute or not cfg["has_audio"] or not audio_map:
         cmd.append("-an")
     else:
-        cmd.extend(["-map", "0:a:0"])
+        cmd.extend(["-map", audio_map])
         cmd.extend(["-c:a", "libopus", "-b:a", f"{args_obj.audio_bitrate}k", "-ac", "2"])
 
     out_path = cfg["out_path"]
@@ -431,45 +439,57 @@ def compress_video(**kwargs):
         print(">>> Info: Slicing and synchronizing subtitles to match segments...")
         slice_and_shift_srt(raw_srt, adjusted_srt, segments)
 
-        # Cleanup raw extraction
         if os.path.exists(raw_srt):
             os.remove(raw_srt)
 
-    # Concat Demuxer File Generation
-    concat_file = None
+    # Native Filter Complex Graph Construction for multi-segment slicing
+    filter_complex = None
+    video_map = None
+    audio_map = None
+
+    has_audio = len(audio) > 0
+    is_audio_enabled = not (args.mute or not has_audio)
+
     if len(segments) > 1:
-        concat_file = os.path.join(out_dir, f"concat_{timestamp}.txt").replace("\\", "/")
-        with open(concat_file, "w", encoding="utf-8") as f:
-            safe_input = args.input_file.replace("'", "'\\''")
-            for st, en in segments:
-                f.write(f"file '{safe_input}'\n")
-                f.write(f"inpoint {st:.3f}\n")
-                f.write(f"outpoint {en:.3f}\n")
+        concat_nodes = ""
+        f_parts = []
+        for i, (st, en) in enumerate(segments):
+            f_parts.append(f"[0:v]trim=start={st:.3f}:end={en:.3f},setpts=PTS-STARTPTS[v{i}]")
+            if is_audio_enabled:
+                f_parts.append(f"[0:a]atrim=start={st:.3f}:end={en:.3f},asetpts=PTS-STARTPTS[a{i}]")
+                concat_nodes += f"[v{i}][a{i}]"
+            else:
+                concat_nodes += f"[v{i}]"
+
+        c_ext = f":a=1[vseg][aseg]" if is_audio_enabled else ":a=0[vseg]"
+        f_parts.append(f"{concat_nodes}concat=n={len(segments)}:v=1{c_ext}")
+        filter_complex = ";".join(f_parts)
+        video_map = "[vseg]"
+        audio_map = "[aseg]" if is_audio_enabled else None
 
     # Bitrate Calculation & Audio Evaluation
-    has_audio = len(audio) > 0
     total_br, video_br = calculate_bitrates(
-        args.size, effective_duration, args.audio_bitrate, not (args.mute or not has_audio)
+        args.size, effective_duration, args.audio_bitrate, is_audio_enabled
     )
 
     safe_name = "".join(c if c.isalnum() else "_" for c in os.path.basename(out_path))
     log_name = f"passlog_{safe_name}_{timestamp}"
-
-    # Windows passlogfile escape bug fix applied here
     log_prefix = os.path.join(out_dir, log_name).replace("\\", "/")
 
     cfg = {
         "segments": segments,
         "clip_duration": clip_duration,
         "effective_duration": effective_duration,
-        "raw_duration": duration,  # ADDED: Store raw duration for accurate -t checking
+        "raw_duration": duration,
         "video_bitrate": video_br,
         "src_w": w,
         "src_h": h,
         "src_fps": fps,
         "log_prefix": log_prefix,
         "out_path": out_path,
-        "concat_file": concat_file,
+        "filter_complex": filter_complex,
+        "video_map": video_map,
+        "audio_map": audio_map,
         "adjusted_srt": adjusted_srt,
         "has_audio": has_audio,
     }
@@ -518,12 +538,10 @@ def compress_video(**kwargs):
             run_ffmpeg_pass(1, args, cfg)
             run_ffmpeg_pass(2, args, cfg)
     finally:
-        # Secure cleanup logic for all temp files
+        # Secure cleanup logic for all temp encoder log targets
         cleanup_files = []
         if not args.proto:
             cleanup_files.extend([f"{log_prefix}-0.log", f"{log_prefix}-0.log.temp"])
-        if cfg.get("concat_file"):
-            cleanup_files.append(cfg["concat_file"])
         if cfg.get("adjusted_srt"):
             cleanup_files.append(cfg["adjusted_srt"])
 
@@ -716,7 +734,6 @@ def main():
         help="Print the FFmpeg commands to console instead of running them.",
     )
 
-    # Process and sanitize sys.argv before argparse parses it
     clean_sys_argv = sanitize_input_args(sys.argv[1:])
     args = parser.parse_args(clean_sys_argv)
 
