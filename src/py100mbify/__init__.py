@@ -294,7 +294,10 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
     cmd.extend(["-c:v", "libvpx-vp9", "-row-mt", "1"])
     if cfg["effective_duration"] < 10.0:
         # Optimized GOP for short clips
+        cmd.extend(["-keyint_min", str(int(args_obj.fps or cfg["src_fps"]))])
         cmd.extend(["-flags", "+cgop", "-g", str(int(args_obj.fps or cfg["src_fps"]))])
+    else:
+        cmd.extend(["-keyint_min", "150", "-g", "150"])
 
     if args_obj.target_web:
         cmd.extend(["-pix_fmt", "yuv420p", "-profile:v", "0"])
