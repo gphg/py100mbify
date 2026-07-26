@@ -299,6 +299,17 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
         video_map = "0:v:0"
         audio_map = "0:a:0" if cfg["has_audio"] and not args_obj.mute else None
 
+    # Threading and VP9 Tile Columns calculation for server scaling
+    # FFmpeg's -tile-columns uses log2 values (0=1, 1=2, 2=4)
+    if cfg["src_w"] >= 3840:
+        tile_cols = "2"  # 4 columns for 4K
+    elif cfg["src_w"] >= 1920:
+        tile_cols = "1"  # 2 columns for 1080p
+    else:
+        tile_cols = "0"  # 1 column for 720p and below
+
+    cmd.extend(["-threads", str(args_obj.threads), "-tile-columns", tile_cols])
+
     # Codec Settings
     cmd.extend(["-c:v", "libvpx-vp9", "-row-mt", "1"])
 
@@ -355,9 +366,6 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
             ]
         )
         cmd.extend(["-quality", os.environ.get("PY100MBIFY_QUALITY", DEFAULT_QUALITY)])
-
-    # Threading
-    cmd.extend(["-threads", os.environ.get("PY100MBIFY_THREADS", str(DEFAULT_THREADS))])
 
     # Route explicit map stream nodes
     cmd.extend(["-map", video_map])
@@ -733,6 +741,12 @@ def main():
 
     # --- Execution Control ---
     exec_group = parser.add_argument_group("Execution Control")
+    exec_group.add_argument(
+        "--threads",
+        type=int,
+        default=int(os.environ.get("PY100MBIFY_THREADS", DEFAULT_THREADS)),
+        help="Number of threads to use. Crucial for headless/server batch processing.",
+    )
     exec_group.add_argument(
         "--cpu-priority",
         choices=["low", "high"],
