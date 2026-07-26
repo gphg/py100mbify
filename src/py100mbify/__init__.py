@@ -301,12 +301,31 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
 
     # Codec Settings
     cmd.extend(["-c:v", "libvpx-vp9", "-row-mt", "1"])
-    if cfg["effective_duration"] < 10.0:
-        # Optimized GOP for short clips
-        fps_str = str(int(args_obj.fps or cfg["src_fps"]))
-        cmd.extend(["-flags", "+cgop", "-keyint_min", fps_str, "-g", fps_str])
+
+    fps_int = int(args_obj.fps or cfg["src_fps"])
+    duration = cfg["effective_duration"]
+
+    # Always enforce Closed GOP for clean web seeking
+    cmd.extend(["-flags", "+cgop"])
+
+    if duration < 10.0:
+        # Micro-clips / Loops (<10s): 1-second strict GOP for instant looping
+        min_gop = fps_int
+        max_gop = fps_int
+
+    elif duration <= 60.0:
+        # Short clips (10s–60s): 2-second max GOP for fast scrubbing
+        min_gop = max(1, fps_int // 2)
+        max_gop = fps_int * 2
+
     else:
-        cmd.extend(["-keyint_min", "150", "-g", "150"])
+        # Minutes-long videos (60s+): 6-second max GOP (e.g., 360 frames @ 60fps)
+        # Maximizes inter-frame compression for CGI dance motion while allowing
+        # dynamic keyframe insertion on beat-synced camera cuts.
+        min_gop = max(1, fps_int)     # 1 second min (prevents keyframe spam on fast cuts)
+        max_gop = fps_int * 6         # 6 seconds max (saves bitrate for high quality)
+
+    cmd.extend(["-keyint_min", str(min_gop), "-g", str(max_gop)])
 
     if args_obj.target_web:
         cmd.extend(["-pix_fmt", "yuv420p", "-profile:v", "0"])
