@@ -299,19 +299,22 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
         video_map = "0:v:0"
         audio_map = "0:a:0" if cfg["has_audio"] and not args_obj.mute else None
 
-    # Threading and VP9 Tile Columns calculation for server scaling
-    # FFmpeg's -tile-columns uses log2 values (0=1, 1=2, 2=4)
-    if cfg["src_w"] >= 3840:
-        tile_cols = "2"  # 4 columns for 4K
-    elif cfg["src_w"] >= 1920:
-        tile_cols = "1"  # 2 columns for 1080p
-    else:
-        tile_cols = "0"  # 1 column for 720p and below
+    # Codec Settings - VP9 vs H.264
+    if cfg["format"] == "webm":
+        # VP9-specific threading and tile columns calculation for server scaling
+        # FFmpeg's -tile-columns uses log2 values (0=1, 1=2, 2=4)
+        if cfg["src_w"] >= 3840:
+            tile_cols = "2"  # 4 columns for 4K
+        elif cfg["src_w"] >= 1920:
+            tile_cols = "1"  # 2 columns for 1080p
+        else:
+            tile_cols = "0"  # 1 column for 720p and below
 
-    cmd.extend(["-threads", str(args_obj.threads), "-tile-columns", tile_cols])
-
-    # Codec Settings
-    cmd.extend(["-c:v", "libvpx-vp9", "-row-mt", "1"])
+        cmd.extend(["-threads", str(args_obj.threads), "-tile-columns", tile_cols])
+        cmd.extend(["-c:v", "libvpx-vp9", "-row-mt", "1"])
+    else:  # MP4 / H.264
+        cmd.extend(["-threads", str(args_obj.threads)])
+        cmd.extend(["-c:v", "libx264", "-preset", "slow"])
 
     fps_int = int(args_obj.fps or cfg["src_fps"])
     duration = cfg["effective_duration"]
@@ -338,8 +341,11 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
 
     cmd.extend(["-keyint_min", str(min_gop), "-g", str(max_gop)])
 
-    if args_obj.target_web:
-        cmd.extend(["-pix_fmt", "yuv420p", "-profile:v", "0"])
+    if cfg["format"] == "webm":
+        if args_obj.target_web:
+            cmd.extend(["-pix_fmt", "yuv420p", "-profile:v", "0"])
+    else:  # MP4 / H.264
+        cmd.extend(["-pix_fmt", "yuv420p"])
 
     if args_obj.proto:
         cmd.extend(
@@ -374,11 +380,15 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
         cmd.append("-an")
     else:
         cmd.extend(["-map", audio_map])
-        cmd.extend(["-c:a", "libopus", "-b:a", f"{args_obj.audio_bitrate}k", "-ac", "2"])
+        if cfg["format"] == "webm":
+            cmd.extend(["-c:a", "libopus", "-b:a", f"{args_obj.audio_bitrate}k", "-ac", "2"])
+        else:  # MP4 / H.264
+            cmd.extend(["-c:a", "aac", "-b:a", f"{args_obj.audio_bitrate}k", "-ac", "2"])
 
     out_path = cfg["out_path"]
+    container_format = cfg["format"]
     if not args_obj.proto and pass_number == 1:
-        cmd.extend(["-f", "webm", "NUL" if sys.platform == "win32" else "/dev/null"])
+        cmd.extend(["-f", container_format, "NUL" if sys.platform == "win32" else "/dev/null"])
     else:
         if args_obj.keep_metadata:
             cmd.extend(["-map_metadata", "0"])
@@ -433,11 +443,19 @@ def compress_video(**kwargs):
             "Effective duration is zero or negative. Check your segment parameters."
         )
 
+    # Determine output format and extension
+    output_format = args.format.lower()
+    if output_format not in ("webm", "mp4"):
+        raise ScriptError(f"Invalid format '{output_format}'. Must be 'webm' or 'mp4'.")
+
+    ext_map = {"webm": ".webm", "mp4": ".mp4"}
+    output_ext = ext_map[output_format]
+
     if args.output_file:
         out_path = args.output_file
     else:
         base_filename = os.path.splitext(os.path.basename(args.input_file))[0]
-        out_path = f"{base_filename}.webm"
+        out_path = f"{base_filename}{output_ext}"
 
     out_dir = os.path.dirname(os.path.abspath(out_path))
 
@@ -519,6 +537,7 @@ def compress_video(**kwargs):
         "audio_map": audio_map,
         "adjusted_srt": adjusted_srt,
         "has_audio": has_audio,
+        "format": output_format,
     }
 
     # Build Dynamic Info Strings
@@ -542,11 +561,18 @@ def compress_video(**kwargs):
     if args.hard_sub: overrides.append("Hard-subs: Enabled")
     if args.proto: overrides.append(f"Mode: Prototype (CRF {args.proto})")
 
+    # Format display string
+    if output_format == "webm":
+        format_str = "WebM (VP9/Opus)"
+    else:
+        format_str = "MP4 (H.264/AAC)"
+
     header = [
         f"Py100mbify Session Started: {start_timestamp}",
         f"Input: {os.path.basename(args.input_file)} ({duration:.2f}s raw)",
         f"Clip Duration: {effective_duration:.2f}s",
         f"Source: {w}x{h} @ {fps_display}",
+        f"Target Format: {format_str}",
         f"Target Size: {args.size} MiB",
         f"Settings: {video_br:.2f}k video, {args.audio_bitrate if has_audio and not args.mute else 0}k audio",
         f"Output Path: {out_path}",
@@ -609,7 +635,7 @@ def compress_video(**kwargs):
             with open("py100mbify_history.log", "a", encoding="utf-8") as f:
                 f.write(
                     f"[{start_timestamp}] COMPLETED: {os.path.basename(args.input_file)} "
-                    f"(Segments: {len(segments)}) "
+                    f"(Segments: {len(segments)}, Format: {output_format.upper()}) "
                     f"-> {final_size:.2f}MB in {str(timedelta(seconds=int(total_elapsed)))} "
                     f"({speed_ratio:.2f}x)\n"
                 )
@@ -638,8 +664,8 @@ def sanitize_input_args(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="py100mbify",
-        description="Py100mbify: A high-precision VP9/WebM target-size compressor for Discord and web sharing.",
-        epilog="Example: py100mbify input.mp4 --size 50 --segment 00:01:30 00:05:00 --hard-sub",
+        description="Py100mbify: A high-precision target-size video compressor (WebM VP9/Opus or MP4 H.264/AAC) for Discord and web sharing.",
+        epilog="Example: py100mbify input.mp4 --size 50 --segment 00:01:30 00:05:00 --hard-sub --format mp4",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -648,7 +674,7 @@ def main():
     parser.add_argument(
         "output_file",
         nargs="?",
-        help="Output path. Defaults to [input_filename].webm in the CURRENT working directory.",
+        help="Output path. Defaults to [input_filename].{webm|mp4} in the CURRENT working directory.",
     )
 
     # --- Target Constraints ---
@@ -661,11 +687,17 @@ def main():
         help="Target file size in MiB.",
     )
     target_group.add_argument(
+        "--format",
+        choices=["webm", "mp4"],
+        default="webm",
+        help="Output container format: WebM (VP9/Opus) or MP4 (H.264/AAC).",
+    )
+    target_group.add_argument(
         "--audio-bitrate",
         type=int,
         default=192,
         metavar="kbps",
-        help="Audio bitrate for the libopus stream.",
+        help="Audio bitrate for the audio stream (Opus for WebM, AAC for MP4).",
     )
     target_group.add_argument(
         "--mute", action="store_true", help="Strip all audio tracks from the output."
@@ -721,7 +753,7 @@ def main():
     quality_group.add_argument(
         "--target-web",
         action="store_true",
-        help="Optimize for web streaming (yuv420p, profile 0).",
+        help="Optimize for web streaming (applies to WebM: yuv420p, profile 0).",
     )
     quality_group.add_argument(
         "--keep-metadata",
