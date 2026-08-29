@@ -5,11 +5,11 @@ Rewrite in Python.
 
 A command-line tool written in Python to compress video files to a precise target size, built for creating high-quality media files in **WebM (VP9/Opus)** or **MP4 (H.264/AAC)** formats for platforms with file size limits like Discord.
 
-The core of this script is a powerful 2-pass encoding routine wrapped around FFmpeg, allowing you to hit a file size target (e.g., 600 MiB) while maintaining the best possible quality.
+The core of this script is a powerful 2-pass encoding routine wrapped around FFmpeg, allowing you to hit a file size target (e.g., 500 MiB) while maintaining the best possible quality.
 
 ## Features
 
-* **Target Size Compression:** Calculate the exact video bitrate needed to hit a specified file size (e.g., `--size 600` MiB).
+* **Target Size Compression:** Calculate the exact video bitrate needed to hit a specified file size (e.g., `--size 500` MiB).
 * **Dual Format Support:** Choose between **WebM (VP9/Opus)** for modern efficiency or **MP4 (H.264/AAC)** for broader compatibility.
 * **Audit & History:** Automatically logs completion status, final size, encoding format, and encoding speed to `py100mbify_history.log` for long-term tracking.
 * **Smart Scaling:** Automatically detects integer-ratio scaling (e.g., 4K → 1080p) and uses `neighbor` for pixel-perfect sharpness, or falls back to `bicubic`.
@@ -89,9 +89,9 @@ The CLI is organized into functional groups for better clarity:
 
 ## Examples
 
-### Compress a 20 GB AVI to 600 MB MP4
+### Compress a 20 GB AVI to 500 MB MP4
 ```bash
-py100mbify input.avi --size 600 --format mp4 --scale 1080
+py100mbify input.avi --size 500 --format mp4 --scale 1080
 ```
 
 ### Create a WebM from timestamps with hard-subs
