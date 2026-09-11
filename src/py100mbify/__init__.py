@@ -400,10 +400,65 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
 
     label = "Prototype" if args_obj.proto else f"Pass {pass_number}"
     print(f"\n>>> [{datetime.now().strftime('%H:%M:%S')}] Starting {label}...")
+    
+    # NEW: Verbose 2-pass checks (enabled via PY100MBIFY_VERBOSE_2PASS env var)
+    verbose_2pass = os.environ.get("PY100MBIFY_VERBOSE_2PASS", "").lower() in ("1", "true", "yes")
+    
+    if verbose_2pass and not args_obj.proto and pass_number == 2:
+        log_file = f"{cfg['log_prefix']}-0.log"
+        if not os.path.exists(log_file):
+            raise ScriptError(
+                f"Critical: Pass 1 stats file not found at '{log_file}'. "
+                f"Pass 2 cannot read encoding statistics. 2-pass encoding FAILED."
+            )
+        file_size = os.path.getsize(log_file)
+        if file_size == 0:
+            raise ScriptError(
+                f"Critical: Pass 1 stats file is empty at '{log_file}'. "
+                f"Pass 1 may have failed silently. 2-pass encoding FAILED."
+            )
+        print(f">>> [2-PASS-CHECK] Pass 1 stats file verified: {log_file} ({file_size} bytes) ✓")
+    
     start_t = time.time()
     try:
-        subprocess.run(cmd, check=True)
+        # NEW: Capture FFmpeg stderr for verbose 2-pass validation
+        if verbose_2pass and not args_obj.proto:
+            result = subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            stderr_output = result.stderr if result.stderr else ""
+        else:
+            subprocess.run(cmd, check=True)
+            elapsed = time.time() - start_t
+            print(f">>> {label} completed in {elapsed:.2f}s")
+            return
+        
         elapsed = time.time() - start_t
+        
+        # NEW: Parse FFmpeg stderr for 2-pass indicators
+        if verbose_2pass and not args_obj.proto:
+            if pass_number == 1:
+                if "pass" in stderr_output.lower() or "writing" in stderr_output.lower():
+                    print(f">>> [2-PASS-CHECK] Pass 1: FFmpeg writing statistics ✓")
+                else:
+                    print(f">>> [2-PASS-CHECK] Warning: Pass 1 stderr does not mention 'pass' or 'writing'")
+                    if stderr_output:
+                        print(f">>> [2-PASS-CHECK] FFmpeg stderr (first 300 chars):\n{stderr_output[:300]}")
+            
+            elif pass_number == 2:
+                if "reading" in stderr_output.lower() or "read" in stderr_output.lower():
+                    print(f">>> [2-PASS-CHECK] Pass 2: FFmpeg confirmed reading Pass 1 stats ✓")
+                else:
+                    print(f">>> [2-PASS-CHECK] Warning: Pass 2 stderr does not mention 'reading' or 'read'")
+                    print(f">>> [2-PASS-CHECK] 2-pass encoding may have failed. Verify output file quality.")
+                    if stderr_output:
+                        print(f">>> [2-PASS-CHECK] FFmpeg stderr (first 300 chars):\n{stderr_output[:300]}")
+        
         print(f">>> {label} completed in {elapsed:.2f}s")
     except subprocess.CalledProcessError as e:
         raise ScriptError(f"FFmpeg {label} failed with exit code {e.returncode}")
@@ -419,6 +474,11 @@ def compress_video(**kwargs):
     script_start_time = time.time()
     start_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     timestamp = int(script_start_time)
+
+    # NEW: Verbose 2-pass info message
+    verbose_2pass = os.environ.get("PY100MBIFY_VERBOSE_2PASS", "").lower() in ("1", "true", "yes")
+    if verbose_2pass and not args.proto:
+        print(">>> [2-PASS-CHECK] Verbose 2-pass validation ENABLED via PY100MBIFY_VERBOSE_2PASS")
 
     duration, w, h, fps, audio, is_vfr = get_video_info(args.input_file)
 
@@ -591,6 +651,14 @@ def compress_video(**kwargs):
             run_ffmpeg_pass(1, args, cfg)
             run_ffmpeg_pass(2, args, cfg)
     finally:
+        # NEW: Verify 2-pass encoding completion (verbose mode)
+        if verbose_2pass and not args.proto:
+            log_file = f"{cfg['log_prefix']}-0.log"
+            if not os.path.exists(log_file):
+                print("\n>>> [2-PASS-CHECK] ⚠️  WARNING: Pass 1 stats file was removed or not created!")
+            else:
+                print(f"\n>>> [2-PASS-CHECK] ✓ 2-pass stats verified and cleaned up successfully")
+        
         # Secure cleanup logic for all temp encoder log targets
         cleanup_files = []
         if not args.proto:
