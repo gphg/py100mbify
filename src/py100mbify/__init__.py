@@ -421,44 +421,8 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
     
     start_t = time.time()
     try:
-        # NEW: Capture FFmpeg stderr for verbose 2-pass validation
-        if verbose_2pass and not args_obj.proto:
-            result = subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            stderr_output = result.stderr if result.stderr else ""
-        else:
-            subprocess.run(cmd, check=True)
-            elapsed = time.time() - start_t
-            print(f">>> {label} completed in {elapsed:.2f}s")
-            return
-        
+        subprocess.run(cmd, check=True)
         elapsed = time.time() - start_t
-        
-        # NEW: Parse FFmpeg stderr for 2-pass indicators
-        if verbose_2pass and not args_obj.proto:
-            if pass_number == 1:
-                if "pass" in stderr_output.lower() or "writing" in stderr_output.lower():
-                    print(f">>> [2-PASS-CHECK] Pass 1: FFmpeg writing statistics ✓")
-                else:
-                    print(f">>> [2-PASS-CHECK] Warning: Pass 1 stderr does not mention 'pass' or 'writing'")
-                    if stderr_output:
-                        print(f">>> [2-PASS-CHECK] FFmpeg stderr (first 300 chars):\n{stderr_output[:300]}")
-            
-            elif pass_number == 2:
-                if "reading" in stderr_output.lower() or "read" in stderr_output.lower():
-                    print(f">>> [2-PASS-CHECK] Pass 2: FFmpeg confirmed reading Pass 1 stats ✓")
-                else:
-                    print(f">>> [2-PASS-CHECK] Warning: Pass 2 stderr does not mention 'reading' or 'read'")
-                    print(f">>> [2-PASS-CHECK] 2-pass encoding may have failed. Verify output file quality.")
-                    if stderr_output:
-                        print(f">>> [2-PASS-CHECK] FFmpeg stderr (first 300 chars):\n{stderr_output[:300]}")
-        
         print(f">>> {label} completed in {elapsed:.2f}s")
     except subprocess.CalledProcessError as e:
         raise ScriptError(f"FFmpeg {label} failed with exit code {e.returncode}")
