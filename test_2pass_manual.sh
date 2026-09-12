@@ -8,6 +8,7 @@ ffmpeg -f lavfi -i testsrc=duration=5:size=320x240:rate=30 \
 
 # Run py100mbify with 2-pass (print)
 echo ">>> Running: 2-pass commands with '--print' (no process has been made)"
+export PY100MBIFY_VERBOSE_2PASS=
 py100mbify test_input.mp4 test_output.mp4 --size 5 --print
 
 
