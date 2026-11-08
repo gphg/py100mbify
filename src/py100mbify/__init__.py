@@ -62,6 +62,39 @@ def escape_ffmpeg_path(path):
     return path
 
 
+def parse_overlay_specs(specs):
+    """Parse one or more overlay values like 'logo.png;overlay=x=10:y=20'."""
+    if not specs:
+        return []
+    if isinstance(specs, str):
+        specs = [specs]
+
+    parsed = []
+    for spec in specs:
+        if spec is None:
+            continue
+        raw = str(spec).strip()
+        if not raw:
+            continue
+
+        image_path, sep, filter_spec = raw.partition(";")
+        image_path = image_path.strip()
+        filter_spec = filter_spec.strip()
+
+        if not image_path:
+            raise ScriptError("Overlay image path cannot be empty.")
+        if sep and not filter_spec:
+            raise ScriptError(f"Overlay filter cannot be empty for '{image_path}'.")
+
+        if not filter_spec:
+            filter_spec = "overlay"
+        elif not filter_spec.lower().startswith("overlay"):
+            filter_spec = f"overlay={filter_spec}"
+
+        parsed.append({"path": image_path, "filter": filter_spec})
+    return parsed
+
+
 def parse_srt_time(time_str):
     """Converts SRT time format HH:MM:SS,mmm to float seconds."""
     h, m, s_ms = time_str.split(":")
@@ -225,6 +258,10 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
     # Native video input mapping
     cmd.extend(["-i", args_obj.input_file])
 
+    overlay_specs = cfg.get("overlay_specs") or []
+    for overlay in overlay_specs:
+        cmd.extend(["-loop", "1", "-i", overlay["path"]])
+
     if not cfg.get("filter_complex"):
         # Accurate Seeking optimization for single segment cuts
         single_start = cfg["segments"][0][0]
@@ -284,7 +321,27 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
         v_filters.append(args_obj.append_filters)
 
     # Routing Filter Complex graphs safely alongside optional parameter expansions
-    if cfg.get("filter_complex"):
+    if overlay_specs:
+        fc_parts = []
+        if cfg.get("filter_complex"):
+            fc_parts.append(cfg["filter_complex"])
+            current = "[vseg]"
+        else:
+            current = "[0:v:0]"
+
+        if v_filters:
+            fc_parts.append(f"{current}{','.join(v_filters)}[vbase]")
+            current = "[vbase]"
+
+        for idx, overlay in enumerate(overlay_specs):
+            filter_spec = overlay["filter"]
+            fc_parts.append(f"{current}[{idx + 1}:v:0]{filter_spec}[vov{idx}]")
+            current = f"[vov{idx}]"
+
+        cmd.extend(["-filter_complex", ";".join(fc_parts)])
+        video_map = current
+        audio_map = cfg["audio_map"]
+    elif cfg.get("filter_complex"):
         fc_str = cfg["filter_complex"]
         current_video_node = "[vseg]"
         if v_filters:
@@ -400,10 +457,9 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
 
     label = "Prototype" if args_obj.proto else f"Pass {pass_number}"
     print(f"\n>>> [{datetime.now().strftime('%H:%M:%S')}] Starting {label}...")
-    
-    # NEW: Verbose 2-pass checks (enabled via PY100MBIFY_VERBOSE_2PASS env var)
+
     verbose_2pass = os.environ.get("PY100MBIFY_VERBOSE_2PASS", "").lower() in ("1", "true", "yes")
-    
+
     if verbose_2pass and not args_obj.proto and pass_number == 2:
         log_file = f"{cfg['log_prefix']}-0.log"
         if not os.path.exists(log_file):
@@ -418,7 +474,7 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
                 f"Pass 1 may have failed silently. 2-pass encoding FAILED."
             )
         print(f">>> [2-PASS-CHECK] Pass 1 stats file verified: {log_file} ({file_size} bytes) ✓")
-    
+
     start_t = time.time()
     try:
         subprocess.run(cmd, check=True)
@@ -431,6 +487,10 @@ def run_ffmpeg_pass(pass_number, args_obj, cfg):
 def compress_video(**kwargs):
     """Core compression logic with improved reporting and modularity."""
     args = argparse.Namespace(**kwargs)
+    overlay_specs = parse_overlay_specs(getattr(args, "overlay", []))
+    for overlay in overlay_specs:
+        if not os.path.isfile(overlay["path"]):
+            raise ScriptError(f"Overlay image not found: {overlay['path']}")
 
     check_required_commands(REQUIRED_COMMANDS)
     set_process_priority(args.cpu_priority)
@@ -439,7 +499,6 @@ def compress_video(**kwargs):
     start_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     timestamp = int(script_start_time)
 
-    # NEW: Verbose 2-pass info message
     verbose_2pass = os.environ.get("PY100MBIFY_VERBOSE_2PASS", "").lower() in ("1", "true", "yes")
     if verbose_2pass and not args.proto:
         print(">>> [2-PASS-CHECK] Verbose 2-pass validation ENABLED via PY100MBIFY_VERBOSE_2PASS")
@@ -562,6 +621,7 @@ def compress_video(**kwargs):
         "adjusted_srt": adjusted_srt,
         "has_audio": has_audio,
         "format": output_format,
+        "overlay_specs": overlay_specs,
     }
 
     # Build Dynamic Info Strings
@@ -584,6 +644,7 @@ def compress_video(**kwargs):
     if args.mute or not has_audio: overrides.append("Audio: Muted/None")
     if args.hard_sub: overrides.append("Hard-subs: Enabled")
     if args.proto: overrides.append(f"Mode: Prototype (CRF {args.proto})")
+    if overlay_specs: overrides.append(f"Overlays: {len(overlay_specs)}")
 
     # Format display string
     if output_format == "webm":
@@ -615,15 +676,13 @@ def compress_video(**kwargs):
             run_ffmpeg_pass(1, args, cfg)
             run_ffmpeg_pass(2, args, cfg)
     finally:
-        # NEW: Verify 2-pass encoding completion (verbose mode)
         if verbose_2pass and not args.proto:
             log_file = f"{cfg['log_prefix']}-0.log"
             if not os.path.exists(log_file):
                 print("\n>>> [2-PASS-CHECK] ⚠️  WARNING: Pass 1 stats file was removed or not created!")
             else:
                 print(f"\n>>> [2-PASS-CHECK] ✓ 2-pass stats verified and cleaned up successfully")
-        
-        # Secure cleanup logic for all temp encoder log targets
+
         cleanup_files = []
         if not args.proto:
             cleanup_files.extend([f"{log_prefix}-0.log", f"{log_prefix}-0.log.temp"])
@@ -662,7 +721,6 @@ def compress_video(**kwargs):
         summary_text = "\n".join(summary)
         print(summary_text)
 
-        # Persistent Log: Write to a history file so you don't lose data if the terminal closes
         try:
             with open("py100mbify_history.log", "a", encoding="utf-8") as f:
                 f.write(
@@ -773,6 +831,13 @@ def main():
     )
     clip_group.add_argument(
         "--rotate", type=float, metavar="DEG", help="Rotate video clockwise by degrees."
+    )
+    clip_group.add_argument(
+        "--overlay",
+        action="append",
+        default=[],
+        metavar="PATH[;FILTER]",
+        help="Add image overlays in order. Example: --overlay 'logo.png;overlay=x=(W-w)/2:y=(H-h)-52'.",
     )
 
     # --- Video Quality & Filters ---
