@@ -18,7 +18,7 @@ dependencies = []
 windows = ["psutil"]
 
 [project.scripts]
-py100mbify = "py100mbify.overlay_cli:main"
+py100mbify = "py100mbify:main"
 
 [build-system]
 # Switch to setuptools for a pure-Python build chain (formerly uv).
