@@ -3,7 +3,7 @@
 Based on: [100mbify.sh](https://gist.github.com/gphg/b1b0dc152bf60a606afd6dbf55c33319).
 Rewrite in Python.
 
-A command-line tool written in Python to compress video files to a precise target size, built for creating high-quality media files in **WebM (VP9/Opus)** or **MP4 (H.264/AAC)** formats for platforms with file size limits like Discord.
+A command-line tool written in Python to compress video files to a precise target size, built for creating high-quality media files in **WebM (VP9/Opus)** or **MP4 (H.264/AAC)** formats for platforms such as Discord and the web.
 
 The core of this script is a powerful 2-pass encoding routine wrapped around FFmpeg, allowing you to hit a file size target (e.g., 500 MiB) while maintaining the best possible quality.
 
@@ -13,7 +13,7 @@ The core of this script is a powerful 2-pass encoding routine wrapped around FFm
 * **Dual Format Support:** Choose between **WebM (VP9/Opus)** for modern efficiency or **MP4 (H.264/AAC)** for broader compatibility.
 * **Audit & History:** Automatically logs completion status, final size, encoding format, and encoding speed to `py100mbify_history.log` for long-term tracking.
 * **Smart Scaling:** Automatically detects integer-ratio scaling (e.g., 4K → 1080p) and uses `neighbor` for pixel-perfect sharpness, or falls back to `bicubic`.
-* **Trimming & Manipulation:** Supports trimming (`--start`, `--end`), scaling (`--scale`), speed adjustment (`--speed`), and rotation.
+* **Trimming & Manipulation:** Supports trimming (`--start`, `--end`), scaling (`--scale`), speed adjustment (`--speed`), rotation, and ordered image overlays.
 * **Hardsub Support:** Easily burn in subtitles from the input file, automatically handling sync even when trimming mid-video.
 * **Web Compatibility Mode:** One-flag fix (`--target-web`) to force 8-bit color and Profile 0 (WebM only).
 * **Prototype Mode:** Quickly test cuts and filters using a fast single-pass CRF encode (`--proto`).
@@ -57,7 +57,7 @@ The CLI is organized into functional groups for better clarity:
 | --- | --- | --- |
 | `--size` | Target output size in MiB. | 100.0 |
 | `--format` | Output container format: `webm` (VP9/Opus) or `mp4` (H.264/AAC). | `webm` |
-| `--audio-bitrate` | Bitrate for the audio stream in kbps (Opus for WebM, AAC for MP4). | 192 |
+| `--audio-bitrate` | Audio bitrate in kbps (Opus for WebM, AAC for MP4). | 192 |
 | `--mute` | Completely strip audio from the output. | False |
 
 #### 2. Clipping & Transformation
@@ -69,6 +69,7 @@ The CLI is organized into functional groups for better clarity:
 | `--speed` | Playback speed multiplier (e.g., 2.0). | `--speed 1.5` |
 | `--scale` | Resizes the smallest dimension (maintains aspect). | `--scale 720` |
 | `--rotate` | Rotate video clockwise by degrees. | `--rotate 90` |
+| `--overlay` | Add an image overlay; repeat to layer multiple images in order. Optional FFmpeg overlay filter follows `;`. | `--overlay "logo.png;overlay=x=(W-w)/2:y=(H-h)-52"` |
 
 #### 3. Quality & Filtering
 
@@ -85,28 +86,46 @@ The CLI is organized into functional groups for better clarity:
 | --- | --- |
 | `--cpu-priority` | Set process priority (`low` or `high`). |
 | `--proto [CRF]` | Fast single-pass encode for testing. Default CRF: 30. |
-| `--print` | Print FFmpeg commands to stdout without running them. |
+| `--print` | Print the FFmpeg commands to stdout without encoding. |
 
 ## Examples
 
 ### Compress a 20 GB AVI to 500 MB MP4
+
 ```bash
 py100mbify input.avi --size 500 --format mp4 --scale 1080
 ```
 
 ### Create a WebM from timestamps with hard-subs
+
 ```bash
 py100mbify movie.mkv output.webm --size 100 --start 00:05:00 --end 00:15:00 --hard-sub
 ```
 
+### Add and position a logo overlay
+
+```bash
+py100mbify input.mp4 output.mp4 --overlay "logo.png;overlay=x=(W-w)/2:y=(H-h)-52"
+```
+
+### Layer multiple overlays (first overlay is the bottom layer)
+
+```bash
+py100mbify input.mp4 --overlay "background.png" --overlay "logo.png;overlay=x=W-w-24:y=24"
+```
+
+The overlay path is relative to the current working directory unless an absolute path is given. Each image repeats for the video duration. If omitted, the filter defaults to `overlay` (top-left position). The text after the first `;` is passed as the FFmpeg overlay filter, for example `overlay=x=10:y=20`.
+
 ### Test encoding before full run (prototype mode)
+
 ```bash
 py100mbify source.mp4 --size 150 --format mp4 --proto
 ```
 
 ### Print FFmpeg commands without encoding
+
 ```bash
-py100mbify input.avi --format mp4 --print
+py100mbify input.avi --format mp4 --overlay "logo.png" --print
 ```
 
 ## Informative Reporting
@@ -116,7 +135,7 @@ For long-running jobs (hours or days), `py100mbify` provides detailed feedback:
 * **Encoding Speed:** Calculated as a ratio (e.g., `0.50x` means encoding takes twice as long as the video duration).
 * **Accuracy:** Compares final file size against the requested target.
 * **Format Tracking:** History log includes which format was used, making it easy to track MP4 vs WebM encodes.
-* **History Log:** Check `py100mbify_history.log` for a persistent audit trail of all completed encodes. Logs are stored in the same directory as the output file to ensure write permissions.
+* **History Log:** Check `py100mbify_history.log` for a persistent audit trail of all completed encodes.
 
 ## License
 
